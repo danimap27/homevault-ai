@@ -1,16 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Wallet } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type { ResumenFinanciero } from "@/lib/types";
 import { formatoEuros, mesActual } from "@/lib/utils";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 
-/**
- * Widget de resumen financiero mensual a partir de los gastos del vault.
- * Consume GET /api/finance/summary?mes=YYYY-MM; si el mes aún no tiene
- * archivo de gastos (404) se muestra el total a cero.
- */
 export function WidgetFinanzas() {
   const [resumen, setResumen] = useState<ResumenFinanciero | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,21 +36,26 @@ export function WidgetFinanzas() {
 
   return (
     <section aria-labelledby="titulo-finanzas" className="tarjeta-bento">
-      <h2 id="titulo-finanzas" className="mb-3 text-base font-semibold">
-        Gastos del mes
-      </h2>
+      <div className="mb-4 flex items-center gap-2">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400">
+          <Wallet className="size-4" />
+        </div>
+        <h2 id="titulo-finanzas" className="text-base font-semibold">
+          Gastos del mes
+        </h2>
+      </div>
       {error && <ErrorWidget mensaje={error} />}
       {!error && resumen === null && <Cargando />}
       {resumen !== null && (
         <>
-          <p className="text-3xl font-bold tracking-tight">
+          <p className="text-3xl font-bold tracking-tight text-slate-100">
             {formatoEuros(resumen.total)}
           </p>
-          <p className="mb-3 text-xs text-carbon-950/50 dark:text-arena-100/50">
+          <p className="mb-4 text-xs text-slate-500">
             Total de {resumen.mes}
           </p>
           {topCategorias.length > 0 && (
-            <ul className="space-y-1.5 text-sm">
+            <ul className="space-y-2 text-sm">
               {topCategorias.map((cat) => {
                 const pct =
                   resumen.total > 0
@@ -62,15 +63,15 @@ export function WidgetFinanzas() {
                     : 0;
                 return (
                   <li key={cat.categoria}>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-slate-300">
                       <span className="capitalize">{cat.categoria}</span>
                       <span className="font-medium">
                         {formatoEuros(cat.total)}
                       </span>
                     </div>
-                    <div className="mt-0.5 h-1.5 rounded-full bg-arena-200 dark:bg-carbon-800">
+                    <div className="mt-1.5 h-1.5 rounded-full bg-slate-800">
                       <div
-                        className="h-1.5 rounded-full bg-emerald-500"
+                        className="h-1.5 rounded-full bg-emerald-500 transition-all duration-500"
                         style={{ width: `${pct}%` }}
                       />
                     </div>

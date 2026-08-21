@@ -15,13 +15,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import uuid
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
+from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.ai_vision_parser import (
     ErrorParseoTicket,
@@ -35,14 +37,19 @@ from backend.git_sync import GitSync
 from backend.google_sync import GoogleSync, build_google_sync
 from backend.models import (
     Consumible,
+    ConsumibleRequerido,
     EntradaListaCompra,
+    Frecuencia,
     ItemCaducidad,
     ItemHuerfano,
+    Perfil,
     PlanSemanal,
+    Prioridad,
     Receta,
     ResultadoCompra,
     ResultadoConsumo,
     Tarea,
+    VistaCalendarioTarea,
 )
 from backend.mqtt_connector import MQTTConnector, build_mqtt_connector
 from backend.off_client import OFFClient, build_off_client
@@ -54,6 +61,7 @@ from backend.routers import (
     print_nfc,
     ws,
 )
+from backend.perfiles import PerfilManager
 from backend.vault_manager import VaultManager
 from backend.watcher import VaultWatcher, WebSocketManager
 
@@ -84,6 +92,66 @@ class PeticionCompletarTarea(BaseModel):
     """Cuerpo de POST /api/tasks/{task_id}/complete."""
 
     completed_by: Optional[str] = None
+
+
+class CrearTarea(BaseModel):
+    """Cuerpo de POST /api/tasks."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: Optional[str] = None
+    titulo: str
+    zona: Optional[str] = None
+    frecuencia: Frecuencia = "unica"
+    prioridad: Prioridad = "media"
+    asignado_a: Optional[str] = None
+    rotacion_convivientes: Optional[list[str]] = None
+    fecha_programada: Optional[date] = None
+    consumibles_requeridos: list[ConsumibleRequerido] = Field(
+        default_factory=list
+    )
+    indice_rotacion_actual: int = 0
+
+
+class ActualizarTarea(BaseModel):
+    """Cuerpo de PUT /api/tasks/{task_id}."""
+
+    titulo: Optional[str] = None
+    zona: Optional[str] = None
+    frecuencia: Optional[Frecuencia] = None
+    prioridad: Optional[Prioridad] = None
+    asignado_a: Optional[str] = None
+    rotacion_convivientes: Optional[list[str]] = None
+    fecha_programada: Optional[date] = None
+    consumibles_requeridos: Optional[list[ConsumibleRequerido]] = None
+    indice_rotacion_actual: Optional[int] = None
+
+
+class CrearPerfil(BaseModel):
+    """Cuerpo de POST /api/profiles."""
+
+    id: str
+    nombre: str
+    avatar: str = "👤"
+    color: Optional[str] = None
+    pin: Optional[str] = None
+    preferencias: dict = Field(default_factory=dict)
+
+
+class ActualizarPerfil(BaseModel):
+    """Cuerpo de PUT /api/profiles/{id}."""
+
+    nombre: Optional[str] = None
+    avatar: Optional[str] = None
+    color: Optional[str] = None
+    pin: Optional[str] = None
+    preferencias: Optional[dict] = None
+
+
+class PeticionVerificarPin(BaseModel):
+    """Cuerpo de POST /api/profiles/{id}/verify-pin."""
+
+    pin: str = ""
 
 
 class PeticionTicketTexto(BaseModel):
@@ -231,6 +299,86 @@ def _vault(request: Request) -> VaultManager:
 def _sync(request: Request) -> GoogleSync:
     """Recupera el GoogleSync del estado de la app."""
     return request.app.state.google_sync
+
+
+def _perfil_manager(request: Request) -> PerfilManager:
+    """Crea un PerfilManager ligado al vault actual de la petición.
+
+    No se cachea en ``app.state`` para evitar que los tests con vaults
+    temporales compartan el mismo manager entre ejecuciones.
+    """
+    return PerfilManager(request.app.state.vault.vault_path)
+
+
+def _slugify(texto: str) -> str:
+    """Convierte un título en un slug seguro para nombre de archivo."""
+    slug = re.sub(r"[^\w\s-]", "", texto.lower().strip())
+    slug = re.sub(r"[-\s]+", "-", slug)
+    return slug or "tarea"
+
+
+# Deltas para la generación de ocurrencias del calendario
+_DELTAS_CALENDARIO: dict[Frecuencia, relativedelta | timedelta] = {
+    "diaria": timedelta(days=1),
+    "semanal": timedelta(weeks=1),
+    "quincenal": timedelta(weeks=2),
+    "mensual": relativedelta(months=+1),
+    "cada_3_meses": relativedelta(months=+3),
+    "cada_6_meses": relativedelta(months=+6),
+    "anual": relativedelta(years=+1),
+}
+
+
+def _ocurrencias_tarea_en_rango(
+    tarea: Tarea, desde: date, hasta: date
+) -> list[VistaCalendarioTarea]:
+    """Genera las vistas de calendario de una tarea dentro del rango.
+
+    Para tareas recurrentes genera ocurrencias desde ``desde`` hasta ``hasta``.
+    Para tareas únicas devuelve una sola ocurrencia si la fecha cae en rango.
+    """
+    if tarea.fecha_programada is None:
+        return []
+
+    delta = _DELTAS_CALENDARIO.get(tarea.frecuencia)
+    if delta is None:
+        # Tarea única
+        if desde <= tarea.fecha_programada <= hasta:
+            return [_vista_calendario(tarea, tarea.fecha_programada)]
+        return []
+
+    ocurrencias: list[VistaCalendarioTarea] = []
+    fecha = tarea.fecha_programada
+    # Avanzar hasta el primer día dentro del rango para no iterar sin límite
+    while fecha < desde:
+        fecha = _sumar_frecuencia(fecha, delta)
+
+    while fecha <= hasta:
+        ocurrencias.append(_vista_calendario(tarea, fecha))
+        fecha = _sumar_frecuencia(fecha, delta)
+
+    return ocurrencias
+
+
+def _sumar_frecuencia(fecha: date, delta: relativedelta | timedelta) -> date:
+    """Suma un delta a una fecha y devuelve un date."""
+    resultado = fecha + delta
+    if isinstance(resultado, datetime):
+        return resultado.date()
+    return resultado
+
+
+def _vista_calendario(tarea: Tarea, fecha: date) -> VistaCalendarioTarea:
+    """Construye una ``VistaCalendarioTarea`` a partir de una tarea y fecha."""
+    return VistaCalendarioTarea(
+        task_id=tarea.id,
+        titulo=tarea.titulo,
+        fecha=fecha,
+        estado=tarea.estado,
+        prioridad=tarea.prioridad,
+        asignado_a=tarea.asignado_a,
+        bloqueada_por_stock=tarea.bloqueada_por_stock,
+    )
 
 
 @app.get("/api/inventory", response_model=list[Consumible])
@@ -383,6 +531,120 @@ async def listar_tareas(
 ) -> list[Tarea]:
     """Tareas del vault, con filtros opcionales por estado y asignación."""
     return await _vault(request).list_tasks(estado=estado, asignado_a=asignado_a)
+
+
+@app.get("/api/tasks/calendar", response_model=list[VistaCalendarioTarea])
+async def calendario_tareas(
+    request: Request,
+    desde: date = Query(alias="from"),
+    hasta: date = Query(alias="to"),
+) -> list[VistaCalendarioTarea]:
+    """Devuelve ocurrencias de tareas en el rango de fechas solicitado."""
+    if desde > hasta:
+        raise HTTPException(
+            status_code=400,
+            detail="El parámetro 'from' debe ser anterior o igual a 'to'",
+        )
+    tareas = await _vault(request).list_tasks()
+    ocurrencias: list[VistaCalendarioTarea] = []
+    for tarea in tareas:
+        ocurrencias.extend(_ocurrencias_tarea_en_rango(tarea, desde, hasta))
+    return sorted(ocurrencias, key=lambda v: (v.fecha, v.titulo))
+
+
+@app.post("/api/tasks", response_model=Tarea, status_code=201)
+async def crear_tarea(request: Request, peticion: CrearTarea) -> Tarea:
+    """Crea una nueva tarea doméstica en el vault."""
+    slug = _slugify(peticion.titulo)
+    task_id = peticion.id or f"task_{slug}_{uuid.uuid4().hex[:8]}"
+
+    rotacion = peticion.rotacion_convivientes
+    if rotacion is None and peticion.asignado_a:
+        rotacion = [peticion.asignado_a]
+
+    tarea = Tarea(
+        id=task_id,
+        titulo=peticion.titulo,
+        zona=peticion.zona,
+        frecuencia=peticion.frecuencia,
+        estado="pendiente",
+        asignado_a=peticion.asignado_a,
+        rotacion_convivientes=rotacion or [],
+        indice_rotacion_actual=peticion.indice_rotacion_actual,
+        prioridad=peticion.prioridad,
+        consumibles_requeridos=peticion.consumibles_requeridos,
+        fecha_programada=peticion.fecha_programada,
+        historial_completados=[],
+        bloqueada_por_stock=False,
+    )
+
+    try:
+        await _vault(request).create_task(tarea, slug=slug)
+    except FileExistsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe una tarea con el slug '{slug}'",
+        ) from exc
+    return tarea
+
+
+@app.get("/api/tasks/{task_id}", response_model=Tarea)
+async def obtener_tarea(request: Request, task_id: str) -> Tarea:
+    """Devuelve una tarea por su id."""
+    tarea = await _vault(request).get_task(task_id)
+    if tarea is None:
+        raise HTTPException(
+            status_code=404, detail=f"Tarea no encontrada: {task_id}"
+        )
+    return tarea
+
+
+@app.put("/api/tasks/{task_id}", response_model=Tarea)
+async def actualizar_tarea(
+    request: Request, task_id: str, peticion: ActualizarTarea
+) -> Tarea:
+    """Actualiza campos editables de una tarea preservando el cuerpo Markdown."""
+    vault = _vault(request)
+    path = await vault._find_task_path(task_id)
+    if path is None:
+        raise HTTPException(
+            status_code=404, detail=f"Tarea no encontrada: {task_id}"
+        )
+
+    lock = await vault._get_lock(path)
+    async with lock:
+        tarea, cuerpo = await vault._read_doc(path, Tarea)
+        if peticion.titulo is not None:
+            tarea.titulo = peticion.titulo
+        if peticion.zona is not None:
+            tarea.zona = peticion.zona
+        if peticion.frecuencia is not None:
+            tarea.frecuencia = peticion.frecuencia
+        if peticion.prioridad is not None:
+            tarea.prioridad = peticion.prioridad
+        if peticion.asignado_a is not None:
+            tarea.asignado_a = peticion.asignado_a
+        if peticion.rotacion_convivientes is not None:
+            tarea.rotacion_convivientes = peticion.rotacion_convivientes
+        if peticion.fecha_programada is not None:
+            tarea.fecha_programada = peticion.fecha_programada
+        if peticion.consumibles_requeridos is not None:
+            tarea.consumibles_requeridos = peticion.consumibles_requeridos
+        if peticion.indice_rotacion_actual is not None:
+            tarea.indice_rotacion_actual = peticion.indice_rotacion_actual
+
+        await vault._write_doc(path, tarea, cuerpo)
+    return tarea
+
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+async def borrar_tarea(request: Request, task_id: str) -> None:
+    """Elimina el archivo .md de una tarea."""
+    borrada = await _vault(request).delete_task(task_id)
+    if not borrada:
+        raise HTTPException(
+            status_code=404, detail=f"Tarea no encontrada: {task_id}"
+        )
 
 
 # --- Lista de la compra: tachado de entradas (Fase 5) -------------------------
@@ -538,3 +800,90 @@ async def resumen_financiero(request: Request, mes: str) -> ResumenFinanciero:
             for cat, tot in sorted(totales.items())
         ],
     )
+
+
+# --- Perfiles de usuario (estilo Netflix) -------------------------------------
+
+
+@app.get("/api/profiles", response_model=list[Perfil])
+async def listar_perfiles(request: Request) -> list[Perfil]:
+    """Lista todos los perfiles del vault."""
+    return await _perfil_manager(request).listar()
+
+
+@app.get("/api/profiles/{perfil_id}", response_model=Perfil)
+async def obtener_perfil(request: Request, perfil_id: str) -> Perfil:
+    """Devuelve un perfil por su id."""
+    perfil = await _perfil_manager(request).obtener(perfil_id)
+    if perfil is None:
+        raise HTTPException(
+            status_code=404, detail=f"Perfil no encontrado: {perfil_id}"
+        )
+    return perfil
+
+
+@app.post("/api/profiles", response_model=Perfil, status_code=201)
+async def crear_perfil(request: Request, peticion: CrearPerfil) -> Perfil:
+    """Crea un nuevo perfil (máximo 8)."""
+    try:
+        return await _perfil_manager(request).crear(
+            perfil_id=peticion.id,
+            nombre=peticion.nombre,
+            avatar=peticion.avatar,
+            color=peticion.color,
+            pin=peticion.pin,
+            preferencias=peticion.preferencias,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/profiles/{perfil_id}", response_model=Perfil)
+async def actualizar_perfil(
+    request: Request, perfil_id: str, peticion: ActualizarPerfil
+) -> Perfil:
+    """Actualiza los campos editables de un perfil."""
+    try:
+        return await _perfil_manager(request).actualizar(
+            perfil_id=perfil_id,
+            nombre=peticion.nombre,
+            avatar=peticion.avatar,
+            color=peticion.color,
+            pin=peticion.pin,
+            preferencias=peticion.preferencias,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Perfil no encontrado: {perfil_id}"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/profiles/{perfil_id}", status_code=204)
+async def borrar_perfil(request: Request, perfil_id: str) -> None:
+    """Elimina un perfil si no es el último."""
+    try:
+        await _perfil_manager(request).borrar(perfil_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Perfil no encontrado: {perfil_id}"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{perfil_id}/verify-pin")
+async def verificar_pin_perfil(
+    request: Request, perfil_id: str, peticion: PeticionVerificarPin
+) -> dict:
+    """Verifica el PIN de un perfil. Sin PIN siempre válido."""
+    try:
+        valido = await _perfil_manager(request).verificar_pin(
+            perfil_id, peticion.pin
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Perfil no encontrado: {perfil_id}"
+        ) from exc
+    return {"valido": valido}

@@ -29,6 +29,32 @@ export type Prioridad = "baja" | "media" | "alta" | "urgente";
 
 export type EstadoTarea = "pendiente" | "completada";
 
+// --- Perfiles -----------------------------------------------------------------
+
+export interface PreferenciasPerfil {
+  vista_calendario_preferida?: "dia" | "semana" | "mes";
+  notificaciones?: boolean;
+  [clave: string]: unknown;
+}
+
+export interface Perfil {
+  id: string;
+  nombre: string;
+  avatar: string | null;
+  color: string | null;
+  pin: string | null;
+  preferencias: PreferenciasPerfil | null;
+}
+
+export interface CrearPerfilInput {
+  id?: string;
+  nombre: string;
+  avatar?: string | null;
+  color?: string | null;
+  pin?: string | null;
+  preferencias?: PreferenciasPerfil | null;
+}
+
 // --- Inventario ---------------------------------------------------------------
 
 export interface Lote {
@@ -159,6 +185,42 @@ export interface Tarea {
   fecha_programada: string | null;
   ultima_realizacion: string | null;
   historial_completados: HistorialCompletado[];
+  bloqueada_por_stock: boolean;
+}
+
+export interface CrearTareaInput {
+  titulo: string;
+  zona?: string | null;
+  frecuencia?: string;
+  estado?: EstadoTarea;
+  asignado_a?: string | null;
+  rotacion_convivientes?: string[];
+  indice_rotacion_actual?: number;
+  prioridad?: Prioridad;
+  consumibles_requeridos?: ConsumibleRequerido[];
+  fecha_programada?: string | null;
+}
+
+export interface ActualizarTareaInput {
+  titulo?: string;
+  zona?: string | null;
+  frecuencia?: string;
+  estado?: EstadoTarea;
+  asignado_a?: string | null;
+  rotacion_convivientes?: string[];
+  indice_rotacion_actual?: number;
+  prioridad?: Prioridad;
+  consumibles_requeridos?: ConsumibleRequerido[];
+  fecha_programada?: string | null;
+}
+
+export interface VistaCalendarioTarea {
+  task_id: string;
+  titulo: string;
+  fecha: string;
+  estado: EstadoTarea;
+  prioridad: Prioridad;
+  asignado_a: string | null;
   bloqueada_por_stock: boolean;
 }
 

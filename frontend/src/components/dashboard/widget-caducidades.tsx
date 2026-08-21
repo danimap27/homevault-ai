@@ -1,16 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AlertTriangle, Clock, ShieldCheck } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type { ItemCaducidad } from "@/lib/types";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 
 type NivelSemaforo = "rojo" | "amarillo" | "verde";
 
-/**
- * Semáforo de caducidades: rojo <24h (dias_restantes <= 0),
- * amarillo <72h (1-2 días), verde 3-5 días.
- */
 function nivelDe(diasRestantes: number): NivelSemaforo {
   if (diasRestantes <= 0) return "rojo";
   if (diasRestantes <= 2) return "amarillo";
@@ -18,11 +15,16 @@ function nivelDe(diasRestantes: number): NivelSemaforo {
 }
 
 const ESTILOS_NIVEL: Record<NivelSemaforo, string> = {
-  rojo: "border-red-300 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300",
+  rojo: "border-rose-500/20 bg-rose-500/10 text-rose-200",
   amarillo:
-    "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-300",
-  verde:
-    "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300",
+    "border-amber-500/20 bg-amber-500/10 text-amber-200",
+  verde: "border-emerald-500/20 bg-emerald-500/10 text-emerald-200",
+};
+
+const ICONO_NIVEL = {
+  rojo: AlertTriangle,
+  amarillo: Clock,
+  verde: ShieldCheck,
 };
 
 const ETIQUETA_DIAS: Record<NivelSemaforo, string> = {
@@ -53,34 +55,42 @@ export function WidgetCaducidades() {
 
   return (
     <section aria-labelledby="titulo-caducidades" className="tarjeta-bento sm:col-span-2">
-      <h2 id="titulo-caducidades" className="mb-3 text-base font-semibold">
+      <h2 id="titulo-caducidades" className="mb-4 text-base font-semibold">
         Semáforo de caducidades
       </h2>
       {error && <ErrorWidget mensaje={error} />}
       {!error && items === null && <Cargando />}
       {items !== null && items.length === 0 && (
-        <p className="text-sm text-carbon-950/60 dark:text-arena-100/60">
+        <p className="text-sm text-slate-500">
           Nada caduca en los próximos 5 días.
         </p>
       )}
       {items !== null && items.length > 0 && (
-        <ul className="grid gap-2 sm:grid-cols-3">
+        <ul className="grid gap-3 sm:grid-cols-3">
           {(["rojo", "amarillo", "verde"] as const).map((nivel) => {
             const grupo = porNivel(nivel);
+            const Icono = ICONO_NIVEL[nivel];
             return (
               <li
                 key={nivel}
                 className={`rounded-xl border p-3 ${ESTILOS_NIVEL[nivel]}`}
               >
-                <p className="mb-1 text-xs font-bold uppercase tracking-wide">
-                  {ETIQUETA_DIAS[nivel]} · {grupo.length}
-                </p>
+                <div className="mb-2 flex items-center gap-2">
+                  <Icono className="size-4" />
+                  <p className="text-xs font-bold uppercase tracking-wide">
+                    {ETIQUETA_DIAS[nivel]} · {grupo.length}
+                  </p>
+                </div>
                 <ul className="space-y-1 text-sm">
                   {grupo.slice(0, 4).map((item) => (
                     <li key={`${item.item_id}-${item.origen}`} className="truncate">
                       {item.nombre}
                       <span className="opacity-70">
-                        {" "}({item.dias_restantes <= 0 ? "hoy/ayer" : `${item.dias_restantes} d`})
+                        {" "}(
+                        {item.dias_restantes <= 0
+                          ? "hoy/ayer"
+                          : `${item.dias_restantes} d`}
+                        )
                       </span>
                     </li>
                   ))}

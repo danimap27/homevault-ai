@@ -1,16 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ScanBarcode } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type { CategoriaItem, Consumible, Ubicacion } from "@/lib/types";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 import { Escaner } from "@/components/escaner";
-
-/**
- * Inventario por zonas con pestañas. Las zonas mezclan ubicaciones físicas
- * (nevera, congelador, despensa) y categorías de uso (limpieza, recambios,
- * botiquín), filtradas en cliente sobre una única descarga del inventario.
- */
 
 type Zona =
   | { id: string; nombre: string; tipo: "ubicacion"; valor: Ubicacion }
@@ -66,7 +61,6 @@ export default function InventarioPage() {
       setEscanerAbierto(false);
       const encontrado = (items ?? []).find((i) => i.ean_barcode === codigo);
       if (encontrado) {
-        // Cambia a la zona del ítem y avisa del resultado del escaneo.
         const zona =
           ZONAS.find(
             (z) =>
@@ -124,8 +118,8 @@ export default function InventarioPage() {
             onClick={() => setZonaActiva(zona)}
             className={`boton-tactil shrink-0 ${
               zona.id === zonaActiva.id
-                ? "bg-carbon-900 text-white dark:bg-arena-100 dark:text-carbon-950"
-                : "border border-arena-200 bg-white dark:border-carbon-800 dark:bg-carbon-900"
+                ? "bg-slate-100 text-slate-950"
+                : "border border-slate-700/50 bg-slate-900/60 text-slate-300"
             }`}
           >
             {zona.nombre}
@@ -138,9 +132,7 @@ export default function InventarioPage() {
 
       {aviso && (
         <p
-          className="mb-3 rounded-xl border border-emerald-300 bg-emerald-50
-            p-2.5 text-sm text-emerald-800 dark:border-emerald-900
-            dark:bg-emerald-950/60 dark:text-emerald-300"
+          className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200"
           role="status"
         >
           {aviso}
@@ -150,7 +142,7 @@ export default function InventarioPage() {
       {error && <ErrorWidget mensaje={error} />}
       {!error && items === null && <Cargando />}
       {items !== null && visibles.length === 0 && (
-        <p className="text-sm text-carbon-950/60 dark:text-arena-100/60">
+        <p className="text-sm text-slate-500">
           No hay ítems en {zonaActiva.nombre.toLowerCase()}.
         </p>
       )}
@@ -159,33 +151,32 @@ export default function InventarioPage() {
         {visibles.map((item) => (
           <li key={item.id} className="tarjeta-bento">
             <div className="mb-2 flex items-start justify-between gap-2">
-              <h3 className="min-w-0 font-semibold leading-tight">
+              <h3 className="min-w-0 font-semibold leading-tight text-slate-100">
                 {item.nombre}
               </h3>
-              <span className="shrink-0 text-sm font-medium">
+              <span className="shrink-0 text-sm font-medium text-slate-300">
                 {item.stock_actual} {item.unidad}
               </span>
             </div>
 
-            {/* Badges: lotes FIFO, reserva estratégica, bajo mínimo, caducidad */}
             <div className="mb-3 flex flex-wrap gap-1.5 text-xs">
               {item.lotes.length > 0 && (
-                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-sky-800 dark:bg-sky-950 dark:text-sky-300">
+                <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-sky-300">
                   {item.lotes.length} {item.lotes.length === 1 ? "lote" : "lotes"}
                 </span>
               )}
               {item.es_reserva_estrategica && (
-                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-violet-800 dark:bg-violet-950 dark:text-violet-300">
+                <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-violet-300">
                   Reserva estratégica
                 </span>
               )}
               {item.stock_actual <= item.stock_minimo && (
-                <span className="rounded-full bg-red-100 px-2 py-0.5 text-red-800 dark:bg-red-950 dark:text-red-300">
+                <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-rose-300">
                   Bajo mínimo
                 </span>
               )}
               {item.fecha_caducidad_proxima && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-300">
                   Caduca {item.fecha_caducidad_proxima}
                 </span>
               )}
@@ -211,18 +202,13 @@ export default function InventarioPage() {
         ))}
       </ul>
 
-      {/* Botón flotante del escáner, al alcance del pulgar */}
       <button
         type="button"
         onClick={() => setEscanerAbierto(true)}
         aria-label="Abrir escáner de código de barras"
-        className="fixed bottom-20 right-4 z-30 flex size-14 items-center
-          justify-center rounded-full bg-emerald-600 text-white shadow-lg
-          transition-transform active:scale-90 hover:bg-emerald-700"
+        className="fixed bottom-24 right-5 z-30 flex size-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 transition-all duration-200 hover:scale-110 hover:bg-emerald-500 active:scale-95"
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="size-7" aria-hidden>
-          <path strokeLinecap="round" d="M3 7V5a2 2 0 0 1 2-2h2m10 0h2a2 2 0 0 1 2 2v2m0 10v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M4 12h16" />
-        </svg>
+        <ScanBarcode className="size-7" />
       </button>
 
       {escanerAbierto && (

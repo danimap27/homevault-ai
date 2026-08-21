@@ -12,6 +12,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import { ChefHat, Package } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type {
   ComidaPlanificada,
@@ -27,18 +28,18 @@ import {
 } from "@/components/estado-async";
 
 const DIAS = [
-  "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo",
+  "lunes",
+  "martes",
+  "miércoles",
+  "jueves",
+  "viernes",
+  "sábado",
+  "domingo",
 ] as const;
 const TOMAS = ["comida", "cena"] as const;
 
 type SlotId = `${(typeof DIAS)[number]}:${(typeof TOMAS)[number]}`;
 
-/**
- * Planificador semanal: arrastra recetas (dnd-kit, con soporte táctil vía
- * PointerSensor) a los slots día/toma. Si aún no hay plan de la semana en
- * el vault (404), la página arranca con un plan vacío local que se persiste
- * al guardar (PUT /api/planner/current).
- */
 export default function PlanificadorPage() {
   const [recetas, setRecetas] = useState<Receta[] | null>(null);
   const [plan, setPlan] = useState<PlanSemanal | null>(null);
@@ -49,7 +50,6 @@ export default function PlanificadorPage() {
   const [rescue, setRescue] = useState<SugerenciaRescate[] | null>(null);
   const [batchAbierto, setBatchAbierto] = useState(false);
 
-  // PointerSensor con retraso mínimo: compatible con ratón y pantalla táctil.
   const sensores = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
@@ -81,7 +81,6 @@ export default function PlanificadorPage() {
       .then(setPlan)
       .catch((err) => {
         if (err instanceof ErrorApi && err.status === 404) {
-          // Semana sin plan en el vault: se empieza con un plan vacío local.
           setPlan(planVacio);
         } else {
           setError("No se pudo cargar el plan semanal");
@@ -180,27 +179,34 @@ export default function PlanificadorPage() {
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <h2 className="mr-auto text-lg font-semibold">
+        <h2 className="mr-auto text-lg font-semibold text-slate-100">
           Semana {plan?.semana_iso ?? semanaISOActual()}
         </h2>
         <button type="button" onClick={lanzarRescueChef} className="boton-secundario">
-          Rescue Chef
+          <ChefHat className="size-4" /> Rescue Chef
         </button>
         <button
           type="button"
           onClick={() => setBatchAbierto(true)}
           className="boton-secundario"
         >
-          Batch cooking
+          <Package className="size-4" /> Batch cooking
         </button>
         <button type="button" onClick={guardar} className="boton-primario">
           Guardar
         </button>
       </div>
 
-      {pendiente && <div className="mb-3"><EndpointPendiente ruta={pendiente} /></div>}
+      {pendiente && (
+        <div className="mb-3">
+          <EndpointPendiente ruta={pendiente} />
+        </div>
+      )}
       {aviso && (
-        <p className="mb-3 rounded-xl border border-emerald-300 bg-emerald-50 p-2.5 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300" role="status">
+        <p
+          className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200"
+          role="status"
+        >
           {aviso}
         </p>
       )}
@@ -213,13 +219,12 @@ export default function PlanificadorPage() {
           onDragStart={alEmpezarArrastre}
           onDragEnd={alSoltar}
         >
-          {/* Biblioteca de recetas arrastrables */}
           <section aria-label="Recetas disponibles" className="tarjeta-bento mb-4">
-            <h3 className="mb-2 text-sm font-semibold">
+            <h3 className="mb-2 text-sm font-semibold text-slate-200">
               Recetas (arrastra a un día)
             </h3>
             {recetas.length === 0 ? (
-              <p className="text-sm text-carbon-950/60 dark:text-arena-100/60">
+              <p className="text-sm text-slate-500">
                 No hay recetas en el vault.
               </p>
             ) : (
@@ -231,11 +236,12 @@ export default function PlanificadorPage() {
             )}
           </section>
 
-          {/* Parrilla semanal día x toma */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {DIAS.map((dia) => (
               <section key={dia} className="tarjeta-bento" aria-label={dia}>
-                <h3 className="mb-2 text-sm font-semibold capitalize">{dia}</h3>
+                <h3 className="mb-2 text-sm font-semibold capitalize text-slate-200">
+                  {dia}
+                </h3>
                 <div className="space-y-2">
                   {TOMAS.map((toma) => {
                     const slot: SlotId = `${dia}:${toma}`;
@@ -256,7 +262,6 @@ export default function PlanificadorPage() {
             ))}
           </div>
 
-          {/* Elemento flotante mientras se arrastra */}
           <DragOverlay>
             {recetaArrastrada ? (
               <div className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-medium text-white shadow-xl">
@@ -271,21 +276,24 @@ export default function PlanificadorPage() {
         <Modal alCerrar={() => setRescue(null)} titulo="Rescue Chef">
           <ul className="space-y-3">
             {rescue.map((sugerencia) => (
-              <li key={sugerencia.receta.id}>
-                <p className="font-semibold">
+              <li
+                key={sugerencia.receta.id}
+                className="rounded-xl border border-slate-700/30 bg-slate-900/50 p-3"
+              >
+                <p className="font-semibold text-slate-200">
                   {sugerencia.receta.titulo}
                   {sugerencia.stock_critico && (
-                    <span className="ml-2 rounded-md bg-red-100 px-1.5 py-0.5 text-xs text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                    <span className="ml-2 rounded-md bg-rose-500/15 px-1.5 py-0.5 text-xs text-rose-300">
                       stock crítico
                     </span>
                   )}
                 </p>
-                <p className="text-sm">
+                <p className="text-sm text-slate-400">
                   Caduca en {sugerencia.dias_restantes_min} día
                   {sugerencia.dias_restantes_min === 1 ? "" : "s"}
                 </p>
                 {sugerencia.items_a_rescatar.length > 0 && (
-                  <p className="text-sm text-carbon-950/60 dark:text-arena-100/60">
+                  <p className="text-sm text-slate-500">
                     Aprovecha:{" "}
                     {sugerencia.items_a_rescatar.map((i) => i.nombre).join(", ")}
                   </p>
@@ -336,13 +344,12 @@ function RecetaArrastrable({ receta }: { receta: Receta }) {
           ? { transform: `translate(${transform.x}px, ${transform.y}px)` }
           : undefined
       }
-      className={`min-h-11 shrink-0 cursor-grab touch-none select-none
-        rounded-xl border border-arena-200 bg-arena-50 px-3 py-2 text-sm
-        dark:border-carbon-800 dark:bg-carbon-800
-        ${isDragging ? "opacity-40" : ""}`}
+      className={`min-h-11 shrink-0 cursor-grab touch-none select-none rounded-xl border border-slate-700/50 bg-slate-900/60 px-3 py-2 text-sm transition-colors hover:border-slate-600 ${
+        isDragging ? "opacity-40" : ""
+      }`}
     >
-      <p className="font-medium">{receta.titulo}</p>
-      <p className="text-xs opacity-60">
+      <p className="font-medium text-slate-200">{receta.titulo}</p>
+      <p className="text-xs text-slate-500">
         {receta.tiempo_minutos} min · {receta.raciones} raciones
       </p>
     </li>
@@ -368,30 +375,29 @@ function SlotDroppable({
   return (
     <div
       ref={setNodeRef}
-      className={`flex min-h-12 items-center justify-between gap-2 rounded-xl
-        border border-dashed px-3 py-2 text-sm transition-colors
-        ${isOver
-          ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40"
-          : "border-arena-200 dark:border-carbon-800"
-        }`}
+      className={`flex min-h-12 items-center justify-between gap-2 rounded-xl border border-dashed px-3 py-2 text-sm transition-colors ${
+        isOver
+          ? "border-emerald-500 bg-emerald-500/10"
+          : "border-slate-700/50 bg-slate-950/30"
+      }`}
     >
-      <span className="text-xs uppercase tracking-wide opacity-50">{toma}</span>
+      <span className="text-xs uppercase tracking-wide text-slate-500">{toma}</span>
       {ocupado ? (
         <>
-          <span className="min-w-0 flex-1 truncate text-right font-medium">
+          <span className="min-w-0 flex-1 truncate text-right font-medium text-slate-200">
             {tituloReceta ?? comida?.plato_libre}
           </span>
           <button
             type="button"
             onClick={alLimpiar}
             aria-label={`Quitar ${toma}`}
-            className="shrink-0 rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+            className="shrink-0 rounded-lg px-2 py-1 text-xs text-rose-400 hover:bg-rose-950/30"
           >
             Quitar
           </button>
         </>
       ) : (
-        <span className="text-xs opacity-40">Suelta una receta</span>
+        <span className="text-xs text-slate-600">Suelta una receta</span>
       )}
     </div>
   );
@@ -411,7 +417,7 @@ function Modal({
       role="dialog"
       aria-modal="true"
       aria-label={titulo}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-carbon-950/50 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
       onClick={alCerrar}
     >
       <div
@@ -419,7 +425,7 @@ function Modal({
         onClick={(ev) => ev.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-base font-semibold">{titulo}</h3>
+          <h3 className="text-base font-semibold text-slate-100">{titulo}</h3>
           <button type="button" onClick={alCerrar} className="boton-secundario">
             Cerrar
           </button>
@@ -453,15 +459,15 @@ function ModalBatchCooking({
 
   return (
     <Modal titulo="Batch cooking" alCerrar={alCerrar}>
-      <p className="mb-3 text-sm text-carbon-950/60 dark:text-arena-100/60">
+      <p className="mb-3 text-sm text-slate-500">
         Descuenta los ingredientes del inventario y crea un tupper por receta.
       </p>
       <fieldset className="mb-3">
-        <legend className="mb-1 text-sm">Recetas a preparar</legend>
+        <legend className="mb-1 text-sm text-slate-300">Recetas a preparar</legend>
         <ul className="max-h-48 space-y-1 overflow-y-auto">
           {recetas.map((receta) => (
             <li key={receta.id}>
-              <label className="flex min-h-11 items-center gap-2 rounded-xl px-2 text-sm hover:bg-arena-50 dark:hover:bg-carbon-800">
+              <label className="flex min-h-11 items-center gap-2 rounded-xl px-2 text-sm text-slate-300 transition-colors hover:bg-slate-800/60">
                 <input
                   type="checkbox"
                   checked={seleccionadas.has(receta.id)}
@@ -474,12 +480,12 @@ function ModalBatchCooking({
           ))}
         </ul>
       </fieldset>
-      <label className="mb-4 block text-sm">
+      <label className="mb-4 block text-sm text-slate-300">
         Destino en inventario
         <select
           value={destino}
           onChange={(ev) => setDestino(ev.target.value)}
-          className="mt-1 min-h-11 w-full rounded-xl border border-arena-200 bg-arena-50 px-3 dark:border-carbon-800 dark:bg-carbon-800"
+          className="mt-1 min-h-11 w-full rounded-xl border border-slate-700/50 bg-slate-950/40 px-3 text-slate-100 outline-none focus:border-emerald-500/60"
         >
           <option value="congelador">Congelador</option>
           <option value="nevera">Nevera</option>

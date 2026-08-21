@@ -1,18 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Printer, Share2 } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type { EntradaListaCompra } from "@/lib/types";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 
 const CATEGORIA_GENERAL = "general";
 
-/**
- * Lista de la compra agrupada por categoría/pasillo, con checkboxes
- * (POST /api/shopping-list/check), exportación (Web Share API /
- * portapapeles / descarga) e impresión térmica (POST /api/print/receipt-list)
- * con fallback a window.print().
- */
 export default function ListaCompraPage() {
   const [entradas, setEntradas] = useState<EntradaListaCompra[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +39,6 @@ export default function ListaCompraPage() {
   }, [entradas]);
 
   const alternar = async (entrada: EntradaListaCompra) => {
-    // Actualización optimista: se deshace si la API falla.
     setEntradas(
       (prev) =>
         prev?.map((e) =>
@@ -92,7 +86,6 @@ export default function ListaCompraPage() {
       await navigator.clipboard.writeText(texto);
       setAviso("Lista copiada al portapapeles");
     } catch {
-      // Fallback final: descarga como .txt.
       const blob = new Blob([texto], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const enlace = document.createElement("a");
@@ -109,7 +102,6 @@ export default function ListaCompraPage() {
       const res = await api.imprimirListaCompra();
       setAviso(`Lista enviada a la impresora (${res.lineas} líneas)`);
     } catch {
-      // Impresora no configurada: impresión del navegador.
       setAviso("Impresora térmica no disponible: usando impresión del navegador");
       setTimeout(() => window.print(), 300);
     }
@@ -118,18 +110,20 @@ export default function ListaCompraPage() {
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <h2 className="mr-auto text-lg font-semibold">Lista de la compra</h2>
+        <h2 className="mr-auto text-lg font-semibold text-slate-100">
+          Lista de la compra
+        </h2>
         <button type="button" onClick={exportar} className="boton-secundario">
-          Exportar
+          <Share2 className="size-4" /> Exportar
         </button>
         <button type="button" onClick={imprimir} className="boton-primario">
-          Imprimir
+          <Printer className="size-4" /> Imprimir
         </button>
       </div>
 
       {aviso && (
         <p
-          className="mb-3 rounded-xl border border-emerald-300 bg-emerald-50 p-2.5 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300"
+          className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200"
           role="status"
         >
           {aviso}
@@ -138,12 +132,9 @@ export default function ListaCompraPage() {
       {error && <ErrorWidget mensaje={error} />}
       {!error && entradas === null && <Cargando />}
       {entradas !== null && entradas.length === 0 && (
-        <p className="text-sm text-carbon-950/60 dark:text-arena-100/60">
-          La lista está vacía.
-        </p>
+        <p className="text-sm text-slate-500">La lista está vacía.</p>
       )}
 
-      {/* .solo-print: al imprimir desde el navegador solo sale esta zona */}
       <div className="solo-print space-y-4">
         {porCategoria.map(([categoria, items]) => (
           <section
@@ -151,13 +142,13 @@ export default function ListaCompraPage() {
             aria-label={`Pasillo ${categoria}`}
             className="tarjeta-bento"
           >
-            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-carbon-950/60 dark:text-arena-100/60">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
               {categoria.replace(/_/g, " ")}
             </h3>
             <ul className="space-y-1">
               {items.map((entrada) => (
                 <li key={entrada.item_id}>
-                  <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-2 hover:bg-arena-50 dark:hover:bg-carbon-800">
+                  <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-2 transition-colors hover:bg-slate-800/40">
                     <input
                       type="checkbox"
                       checked={entrada.comprado}
@@ -166,13 +157,15 @@ export default function ListaCompraPage() {
                     />
                     <span
                       className={
-                        entrada.comprado ? "line-through opacity-50" : ""
+                        entrada.comprado
+                          ? "text-slate-500 line-through"
+                          : "text-slate-200"
                       }
                     >
                       {entrada.nombre}
                     </span>
                     {entrada.cantidad !== null && (
-                      <span className="ml-auto shrink-0 text-sm text-carbon-950/60 dark:text-arena-100/60">
+                      <span className="ml-auto shrink-0 text-sm text-slate-500">
                         {entrada.cantidad} {entrada.unidad ?? ""}
                       </span>
                     )}

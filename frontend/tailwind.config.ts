@@ -1,14 +1,12 @@
 import type { Config } from "tailwindcss";
 
-// Modo oscuro por clase: el script inline de layout.tsx aplica la clase
-// "dark" según preferencia guardada o prefers-color-scheme del sistema.
 const config: Config = {
   darkMode: "class",
   content: ["./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        // Paleta neutra cálida para el estilo Bento
+        // Paleta neutra cálida legacy, se mantiene para no romper imports.
         arena: {
           50: "#faf9f7",
           100: "#f3f1ec",
@@ -22,6 +20,23 @@ const config: Config = {
       },
       borderRadius: {
         bento: "1.25rem",
+      },
+      fontFamily: {
+        sans: [
+          "var(--font-geist-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
+        ],
+      },
+      boxShadow: {
+        glow: "0 0 20px rgba(16, 185, 129, 0.15)",
+        "glow-violet": "0 0 20px rgba(139, 92, 246, 0.15)",
+        "glow-amber": "0 0 20px rgba(245, 158, 11, 0.15)",
       },
     },
   },

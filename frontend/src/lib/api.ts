@@ -7,9 +7,13 @@
  */
 
 import type {
+  ActualizarTareaInput,
   Consumible,
+  CrearPerfilInput,
+  CrearTareaInput,
   EntradaListaCompra,
   ItemCaducidad,
+  Perfil,
   PlanSemanal,
   Receta,
   RespuestaCheckLista,
@@ -20,6 +24,7 @@ import type {
   ResumenFinanciero,
   SugerenciaRescate,
   Tarea,
+  VistaCalendarioTarea,
 } from "./types";
 
 export const API_URL =
@@ -61,6 +66,17 @@ function post<T>(path: string, body?: unknown): Promise<T> {
     method: "POST",
     body: body === undefined ? null : JSON.stringify(body),
   });
+}
+
+function put<T>(path: string, body?: unknown): Promise<T> {
+  return apiFetch<T>(path, {
+    method: "PUT",
+    body: body === undefined ? null : JSON.stringify(body),
+  });
+}
+
+function del<T>(path: string): Promise<T> {
+  return apiFetch<T>(path, { method: "DELETE" });
 }
 
 export const api = {
@@ -111,6 +127,39 @@ export const api = {
   /** GET /api/tasks?estado=completada */
   getTareasCompletadas: () =>
     apiFetch<Tarea[]>("/api/tasks?estado=completada"),
+
+  /** GET /api/tasks/{id} */
+  getTarea: (id: string) => apiFetch<Tarea>(`/api/tasks/${encodeURIComponent(id)}`),
+
+  /** POST /api/tasks */
+  crearTarea: (tarea: CrearTareaInput) => post<Tarea>("/api/tasks", tarea),
+
+  /** PUT /api/tasks/{id} */
+  actualizarTarea: (id: string, tarea: ActualizarTareaInput) =>
+    put<Tarea>(`/api/tasks/${encodeURIComponent(id)}`, tarea),
+
+  /** DELETE /api/tasks/{id} */
+  borrarTarea: (id: string) => del<void>(`/api/tasks/${encodeURIComponent(id)}`),
+
+  /** GET /api/tasks/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD */
+  getTareasCalendario: (from: string, to: string) =>
+    apiFetch<VistaCalendarioTarea[]>(
+      `/api/tasks/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+
+  // --- Perfiles ---------------------------------------------------------------
+
+  getPerfiles: () => apiFetch<Perfil[]>("/api/profiles"),
+
+  crearPerfil: (perfil: CrearPerfilInput) => post<Perfil>("/api/profiles", perfil),
+
+  actualizarPerfil: (id: string, perfil: CrearPerfilInput) =>
+    put<Perfil>(`/api/profiles/${encodeURIComponent(id)}`, perfil),
+
+  borrarPerfil: (id: string) => del<void>(`/api/profiles/${encodeURIComponent(id)}`),
+
+  verificarPinPerfil: (id: string, pin: string) =>
+    post<{ valido: boolean }>(`/api/profiles/${encodeURIComponent(id)}/verify-pin`, { pin }),
 
   // --- Lista de la compra -----------------------------------------------------
 

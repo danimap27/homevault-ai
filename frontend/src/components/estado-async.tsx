@@ -1,27 +1,27 @@
-/**
- * Estados compartidos de carga/error para los widgets que consumen la API.
- */
+"use client";
+
+import { Loader2 } from "lucide-react";
 
 export function Cargando({ texto = "Cargando…" }: { texto?: string }) {
   return (
-    <p className="animate-pulse text-sm text-carbon-950/50 dark:text-arena-100/50">
+    <div className="flex items-center gap-2 text-sm text-slate-500">
+      <Loader2 className="size-4 animate-spin" />
       {texto}
-    </p>
+    </div>
   );
 }
 
 export function ErrorWidget({ mensaje }: { mensaje: string }) {
   return (
-    <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+    <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">
       {mensaje}
     </p>
   );
 }
 
-/** Mensaje amable cuando un endpoint del spec aún no existe en el backend. */
 export function EndpointPendiente({ ruta }: { ruta: string }) {
   return (
-    <p className="text-sm text-amber-600 dark:text-amber-400">
+    <p className="text-sm text-amber-400">
       Endpoint pendiente en el backend: <code>{ruta}</code>
     </p>
   );

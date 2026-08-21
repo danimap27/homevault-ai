@@ -649,3 +649,35 @@ class VaultManager:
         async with lock:
             _, cuerpo = await self._read_doc(path, Tarea)
             await self._write_doc(path, tarea, cuerpo)
+
+    async def create_task(
+        self, tarea: Tarea, slug: str, cuerpo: str = ""
+    ) -> None:
+        """Crea un nuevo archivo de tarea en ``tareas/<slug>.md``.
+
+        Si no se proporciona cuerpo, se usa una plantilla mínima con checklist.
+        """
+        raiz = self.vault_path / "tareas"
+        raiz.mkdir(parents=True, exist_ok=True)
+        path = raiz / f"{slug}.md"
+        if path.exists():
+            raise FileExistsError(f"Ya existe una tarea en {path}")
+        if not cuerpo:
+            cuerpo = f"# {tarea.titulo}\n\n- [ ] Paso 1\n"
+        lock = await self._get_lock(path)
+        async with lock:
+            await self._write_doc(path, tarea, cuerpo)
+
+    async def delete_task(self, task_id: str) -> bool:
+        """Elimina el archivo .md de una tarea. Devuelve True si existía."""
+        path = await self._find_task_path(task_id)
+        if path is None:
+            return False
+        lock = await self._get_lock(path)
+        async with lock:
+            # Releer la ruta por si cambió mientras se adquiría el lock
+            path = await self._find_task_path(task_id)
+            if path is None:
+                return False
+            await asyncio.to_thread(path.unlink)
+        return True

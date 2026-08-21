@@ -219,3 +219,32 @@ class EntradaListaCompra(BaseModel):
     unidad: Optional[str] = None
     categoria: Optional[str] = None
     comprado: bool = False
+
+
+# --- E. Perfil de usuario (vault/config/perfiles.json) ------------------------
+
+
+class Perfil(BaseModel):
+    """Esquema E: perfil de usuario estilo Netflix."""
+
+    id: str
+    nombre: str
+    avatar: str = "👤"
+    color: str = "#6366f1"
+    pin: Optional[str] = None
+    preferencias: dict = Field(default_factory=dict)
+
+
+# --- F. Vista de calendario de tareas -----------------------------------------
+
+
+class VistaCalendarioTarea(BaseModel):
+    """Ocurrencia de una tarea en la vista de calendario."""
+
+    task_id: str
+    titulo: str
+    fecha: date
+    estado: EstadoTarea
+    prioridad: Prioridad
+    asignado_a: Optional[str] = None
+    bloqueada_por_stock: bool = False

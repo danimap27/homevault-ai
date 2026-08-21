@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { CheckSquare, ChevronRight } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type { Tarea } from "@/lib/types";
 import { hoyISO } from "@/lib/utils";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 
-/** Devuelve a quién le toca la tarea según el turno rotativo del vault. */
 export function quienLeToca(tarea: Tarea): string {
   if (tarea.rotacion_convivientes.length > 0) {
     const idx = tarea.indice_rotacion_actual % tarea.rotacion_convivientes.length;
@@ -16,10 +16,6 @@ export function quienLeToca(tarea: Tarea): string {
   return tarea.asignado_a ?? "Sin asignar";
 }
 
-/**
- * Widget de tareas del día: pendientes programadas para hoy (o sin fecha),
- * mostrando a quién le toca según la rotación de convivientes.
- */
 export function WidgetTareasHoy() {
   const [tareas, setTareas] = useState<Tarea[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,13 +40,18 @@ export function WidgetTareasHoy() {
 
   return (
     <section aria-labelledby="titulo-tareas-hoy" className="tarjeta-bento">
-      <h2 id="titulo-tareas-hoy" className="mb-3 text-base font-semibold">
-        Tareas del día
-      </h2>
+      <div className="mb-4 flex items-center gap-2">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
+          <CheckSquare className="size-4" />
+        </div>
+        <h2 id="titulo-tareas-hoy" className="text-base font-semibold">
+          Tareas del día
+        </h2>
+      </div>
       {error && <ErrorWidget mensaje={error} />}
       {!error && tareas === null && <Cargando />}
       {tareas !== null && deHoy.length === 0 && (
-        <p className="text-sm text-carbon-950/60 dark:text-arena-100/60">
+        <p className="text-sm text-slate-500">
           Nada pendiente para hoy.
         </p>
       )}
@@ -59,14 +60,13 @@ export function WidgetTareasHoy() {
           {deHoy.slice(0, 5).map((tarea) => (
             <li
               key={tarea.id}
-              className="flex items-center justify-between gap-2 rounded-xl
-                border border-arena-200 p-2.5 text-sm dark:border-carbon-800"
+              className="flex items-center justify-between gap-2 rounded-xl border border-slate-700/30 bg-slate-950/30 p-2.5 text-sm transition-colors hover:border-slate-600/50"
             >
               <span className="min-w-0 truncate">
                 {tarea.titulo}
                 {tarea.bloqueada_por_stock && (
                   <span
-                    className="ml-1 text-amber-600 dark:text-amber-400"
+                    className="ml-1 text-amber-400"
                     title="Bloqueada por falta de recambio"
                   >
                     (sin recambio)
@@ -74,9 +74,7 @@ export function WidgetTareasHoy() {
                 )}
               </span>
               <span
-                className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5
-                  text-xs font-medium text-emerald-800
-                  dark:bg-emerald-950 dark:text-emerald-300"
+                className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300"
                 title="Turno rotativo"
               >
                 {quienLeToca(tarea)}
@@ -88,9 +86,9 @@ export function WidgetTareasHoy() {
       {tareas !== null && deHoy.length > 5 && (
         <Link
           href="/tareas"
-          className="mt-2 inline-block text-sm text-emerald-600 hover:underline dark:text-emerald-400"
+          className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-emerald-400 transition-colors hover:text-emerald-300"
         >
-          Ver las {deHoy.length} tareas
+          Ver las {deHoy.length} tareas <ChevronRight className="size-4" />
         </Link>
       )}
     </section>

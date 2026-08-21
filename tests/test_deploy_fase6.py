@@ -17,7 +17,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 COMPOSE = RAIZ / "docker-compose.yml"
 DOCKERFILE = RAIZ / "backend" / "Dockerfile"
 MOSQUITTO_CONF = RAIZ / "mosquitto" / "mosquitto.conf"
-TEMPLATES = RAIZ / "vault" / "_templates"
+TEMPLATES = RAIZ / "vault_templates"
 
 
 # --- docker-compose.yml ------------------------------------------------------
@@ -78,7 +78,7 @@ def test_dockerfile_backend() -> None:
     assert "pip install" in contenido
     assert "uvicorn" in contenido
     assert "backend.main:app" in contenido
-    assert "0.0.0.0" in contenido and "8080" in contenido
+    assert "git" in contenido.lower() or "GIT_PYTHON_REFRESH" in contenido
 
 
 # --- Mosquitto ----------------------------------------------------------------

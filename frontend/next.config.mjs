@@ -12,6 +12,23 @@ const withPWA = withPWAInit({
 const nextConfig = {
   output: "standalone", // requerido por el Dockerfile multi-stage
   reactStrictMode: true,
+  async rewrites() {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://backend:8080";
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${apiBase}/api/:path*`,
+      },
+      {
+        source: "/docs",
+        destination: `${apiBase}/docs`,
+      },
+      {
+        source: "/openapi.json",
+        destination: `${apiBase}/openapi.json`,
+      },
+    ];
+  },
 };
 
 export default withPWA(nextConfig);

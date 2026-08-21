@@ -4,6 +4,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Git es necesario para GitPython (auto-sync del vault).
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 # Instala el paquete declarado en pyproject.toml (capa cacheable).
 COPY pyproject.toml ./
 COPY backend ./backend

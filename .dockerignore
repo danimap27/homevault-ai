@@ -1,0 +1,15 @@
+# Contexto de build del backend (raíz del repo)
+.venv/
+.pytest_cache/
+**/__pycache__/
+*.egg-info/
+.env
+.git/
+.gitignore
+credentials/
+tests/
+docs/
+vault/
+mosquitto/
+frontend/
+docker-compose.yml

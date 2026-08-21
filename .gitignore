@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.egg-info/
+.env
+.env.local
+**/*.lock
+**/*.tmp
+
+# Datos personales del usuario: vault local y credenciales OAuth
+credentials/
+vault/
+
+# Frontend Node.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# Mosquitto runtime data
+mosquitto/data/
+mosquitto/logs/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Estilo base Bento: tarjetas redondeadas con sombras suaves. */
+@layer components {
+  .tarjeta-bento {
+    @apply rounded-bento border border-arena-200 bg-white p-4 shadow-sm
+      transition-colors dark:border-carbon-800 dark:bg-carbon-900;
+  }
+
+  /* Objetivos táctiles de al menos 44px en móvil. */
+  .boton-tactil {
+    @apply inline-flex min-h-11 min-w-11 items-center justify-center gap-2
+      rounded-xl px-4 py-2 text-sm font-medium transition-colors
+      active:scale-95 disabled:opacity-50;
+  }
+
+  .boton-primario {
+    @apply boton-tactil bg-carbon-900 text-white hover:bg-carbon-800
+      dark:bg-arena-100 dark:text-carbon-950 dark:hover:bg-white;
+  }
+
+  .boton-secundario {
+    @apply boton-tactil border border-arena-200 bg-white text-carbon-900
+      hover:bg-arena-50 dark:border-carbon-800 dark:bg-carbon-900
+      dark:text-arena-100 dark:hover:bg-carbon-800;
+  }
+}
+
+/* El escáner html5-qrcode inyecta sus propios estilos; se oculta su UI extra. */
+#qr-reader video {
+  @apply rounded-xl;
+}
+
+@media print {
+  /* En impresión solo se muestra la lista de la compra (clase .solo-print). */
+  body * {
+    visibility: hidden;
+  }
+  .solo-print,
+  .solo-print * {
+    visibility: visible;
+  }
+  .solo-print {
+    position: absolute;
+    inset: 0;
+  }
+}

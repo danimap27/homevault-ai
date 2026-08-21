@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+# Service worker generado por next-pwa en build
+public/sw.js
+public/workbox-*.js
+public/swe-worker-*.js
+.env*.local

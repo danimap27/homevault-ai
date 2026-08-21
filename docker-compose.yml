@@ -1,0 +1,56 @@
+# HomeVault AI - Orquestación de servicios (Fase 6)
+#
+# Servicios:
+#   - backend:  API FastAPI (uvicorn) sobre el vault Markdown.
+#   - frontend: Next.js standalone (Dockerfile a cargo de otro agente).
+#   - mqtt:     broker Mosquitto solo accesible desde la red interna.
+
+services:
+  backend:
+    build:
+      # El contexto es la raíz porque pyproject.toml (paquete pip) vive ahí.
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    volumes:
+      - ./vault:/app/vault
+      - ./credentials:/app/credentials
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mqtt
+    networks:
+      - homevault-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      # Next.js standalone estándar; el Dockerfile lo crea otro agente.
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - homevault-net
+    restart: unless-stopped
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    # Sin puertos publicados al host: solo red interna (allow_anonymous true).
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+    networks:
+      - homevault-net
+    restart: unless-stopped
+
+networks:
+  homevault-net:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  mosquitto_logs:

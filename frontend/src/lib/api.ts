@@ -27,6 +27,31 @@ import type {
   VistaCalendarioTarea,
 } from "./types";
 
+// --- Tipos para endpoints de escaneo de códigos de barras --------------------
+
+export interface RespuestaBarcode {
+  item: Consumible;
+  creado: boolean;
+  origen: string;
+}
+
+export interface RespuestaConsumoBarcode {
+  resultado: ResultadoConsumo;
+  quitado_de_lista: number;
+}
+
+export interface SugerenciaFusion {
+  id: string;
+  nombre: string;
+  ean_barcode: string | null;
+}
+
+export interface RespuestaBarcodeNoEncontrado {
+  detail: string;
+  ean: string;
+  sugerencias: SugerenciaFusion[];
+}
+
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -235,5 +260,49 @@ export const api = {
       throw new ErrorApi(resp.status, String(detalle));
     }
     return resp.json();
+  },
+
+  // --- Escaneo de códigos de barras -------------------------------------------
+
+  /** GET /api/barcode/{ean}: devuelve el ítem o un 404 con sugerencias. */
+  escanearBarcode: async (
+    ean: string,
+  ): Promise<RespuestaBarcode | RespuestaBarcodeNoEncontrado> => {
+    const resp = await fetch(`${API_URL}/api/barcode/${encodeURIComponent(ean)}`);
+    if (resp.status === 404) {
+      return (await resp.json()) as RespuestaBarcodeNoEncontrado;
+    }
+    if (!resp.ok) {
+      let detalle = resp.statusText;
+      try {
+        detalle = (await resp.json()).detail ?? detalle;
+      } catch {
+        // Sin cuerpo JSON.
+      }
+      throw new ErrorApi(resp.status, String(detalle));
+    }
+    return (await resp.json()) as RespuestaBarcode;
+  },
+
+  /** POST /api/barcode/consume {ean, cantidad}. */
+  consumirPorBarcode: (ean: string, cantidad = 1) =>
+    post<RespuestaConsumoBarcode>("/api/barcode/consume", { ean, cantidad }),
+
+  /** POST /api/barcode/register multipart/form-data. */
+  registrarBarcode: async (formData: FormData): Promise<Consumible> => {
+    const resp = await fetch(`${API_URL}/api/barcode/register`, {
+      method: "POST",
+      body: formData, // sin Content-Type: el navegador pone el boundary
+    });
+    if (!resp.ok) {
+      let detalle = resp.statusText;
+      try {
+        detalle = (await resp.json()).detail ?? detalle;
+      } catch {
+        // Sin cuerpo JSON.
+      }
+      throw new ErrorApi(resp.status, String(detalle));
+    }
+    return (await resp.json()) as Consumible;
   },
 };

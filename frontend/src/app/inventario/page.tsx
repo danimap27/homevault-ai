@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ScanBarcode } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
+import type {
+  RespuestaBarcode,
+  RespuestaBarcodeNoEncontrado,
+} from "@/lib/api";
 import type { CategoriaItem, Consumible, Ubicacion } from "@/lib/types";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 import { Escaner } from "@/components/escaner";
+import { ModalEscaneo } from "@/components/modal-escaneo";
 
 type Zona =
   | { id: string; nombre: string; tipo: "ubicacion"; valor: Ubicacion }
@@ -33,6 +38,11 @@ export default function InventarioPage() {
   const [error, setError] = useState<string | null>(null);
   const [zonaActiva, setZonaActiva] = useState<Zona>(ZONAS[0]);
   const [escanerAbierto, setEscanerAbierto] = useState(false);
+  const [modalEscaneoAbierto, setModalEscaneoAbierto] = useState(false);
+  const [resultadoEscaneo, setResultadoEscaneo] = useState<
+    RespuestaBarcode | RespuestaBarcodeNoEncontrado | null
+  >(null);
+  const [eanEscaneado, setEanEscaneado] = useState("");
   const [aviso, setAviso] = useState<string | null>(null);
 
   const cargar = useCallback(() => {
@@ -57,23 +67,41 @@ export default function InventarioPage() {
   );
 
   const alEscanear = useCallback(
-    (codigo: string) => {
+    async (codigo: string) => {
       setEscanerAbierto(false);
-      const encontrado = (items ?? []).find((i) => i.ean_barcode === codigo);
-      if (encontrado) {
-        const zona =
-          ZONAS.find(
-            (z) =>
-              (z.tipo === "ubicacion" && z.valor === encontrado.ubicacion) ||
-              (z.tipo === "categoria" && z.valor === encontrado.categoria),
-          ) ?? ZONAS[0];
-        setZonaActiva(zona);
-        setAviso(`Detectado: ${encontrado.nombre} (EAN ${codigo})`);
-      } else {
-        setAviso(`EAN ${codigo} no está en el inventario`);
+      setEanEscaneado(codigo);
+      setResultadoEscaneo(null);
+      setModalEscaneoAbierto(true);
+      try {
+        const res = await api.escanearBarcode(codigo);
+        setResultadoEscaneo(res);
+        if ("item" in res) {
+          const zona =
+            ZONAS.find(
+              (z) =>
+                (z.tipo === "ubicacion" && z.valor === res.item.ubicacion) ||
+                (z.tipo === "categoria" && z.valor === res.item.categoria),
+            ) ?? ZONAS[0];
+          setZonaActiva(zona);
+        }
+      } catch (err) {
+        setModalEscaneoAbierto(false);
+        setAviso(
+          err instanceof ErrorApi
+            ? `Error ${err.status}: ${err.message}`
+            : "No se pudo consultar el código",
+        );
       }
     },
     [items],
+  );
+
+  const alExitoEscaneo = useCallback(
+    (mensaje: string) => {
+      setAviso(mensaje);
+      cargar();
+    },
+    [cargar],
   );
 
   const consumir = async (item: Consumible) => {
@@ -213,6 +241,15 @@ export default function InventarioPage() {
 
       {escanerAbierto && (
         <Escaner alDetectar={alEscanear} alCerrar={() => setEscanerAbierto(false)} />
+      )}
+
+      {modalEscaneoAbierto && (
+        <ModalEscaneo
+          resultado={resultadoEscaneo}
+          ean={eanEscaneado}
+          alCerrar={() => setModalEscaneoAbierto(false)}
+          alExito={alExitoEscaneo}
+        />
       )}
     </div>
   );

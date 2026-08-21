@@ -8,25 +8,40 @@ nombre/marca/alérgenos/tabla nutricional en el cuerpo Markdown.
 
 POST /api/barcode/consume: descuenta `cantidad` de unidades resolviendo el
 ítem por su EAN, delegando en el motor FIFO de VaultManager.consume_item.
+Tras consumir, intenta tachar el ítem de `listas/compra.md` y devuelve el
+número de líneas tachadas.
+
+POST /api/barcode/register: registro manual o por fusión de un producto
+a partir de su EAN, con soporte para fotos del producto y del precio.
 
 El integrador debe registrar este router en main.py:
     from backend.routers.barcode import router as barcode_router
     app.include_router(barcode_router)
-y exponer el cliente OFF en el lifespan:
+y exponer el cliente OFF y el ReceiptParser en el lifespan:
     app.state.off_client = build_off_client()
+    app.state.receipt_parser = build_receipt_parser(vault, settings)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import mimetypes
 import uuid
+from datetime import date
+from pathlib import Path
 from typing import Literal, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend.ai_vision_parser import _slugificar
+from backend.ai_vision_parser import (
+    ReceiptParser,
+    _slugificar,
+    extraer_precio_desde_imagen,
+)
 from backend.models import Consumible, ResultadoConsumo
 from backend.off_client import OFFClient, ProductoOFF, map_off_to_consumible
 from backend.vault_manager import VaultManager, ahora_utc
@@ -44,12 +59,35 @@ class PeticionConsumoBarcode(BaseModel):
 
 
 class RespuestaBarcode(BaseModel):
-    """Respuesta de GET /api/barcode/{ean}."""
+    """Respuesta de GET /api/barcode/{ean} cuando se encuentra el ítem."""
 
     item: Consumible
     creado: bool
     origen: Literal["vault", "off"]
     producto_off: Optional[ProductoOFF] = None
+
+
+class SugerenciaFusion(BaseModel):
+    """Ítem existente sugerido para fusionar con un EAN desconocido."""
+
+    id: str
+    nombre: str
+    ean_barcode: Optional[str] = None
+
+
+class RespuestaNoEncontrado(BaseModel):
+    """Respuesta estructurada de 404 para un EAN no registrado."""
+
+    detail: str
+    ean: str
+    sugerencias: list[SugerenciaFusion]
+
+
+class RespuestaConsumoBarcode(BaseModel):
+    """Respuesta de POST /api/barcode/consume."""
+
+    resultado: ResultadoConsumo
+    quitado_de_lista: int
 
 
 def _vault(request: Request) -> VaultManager:
@@ -66,6 +104,61 @@ def _off_client(request: Request) -> OFFClient:
             detail="Cliente de Open Food Facts no configurado (OFF_*)",
         )
     return cliente
+
+
+def _receipt_parser(request: Request) -> Optional[ReceiptParser]:
+    """Recupera el ReceiptParser del estado de la app, si existe."""
+    return getattr(request.app.state, "receipt_parser", None)
+
+
+def _extension_segura(content_type: Optional[str]) -> str:
+    """Devuelve una extensión de imagen segura a partir del content-type."""
+    if content_type:
+        extension = mimetypes.guess_extension(content_type.split(";")[0].strip())
+        if extension:
+            return extension.lstrip(".")
+    return "jpg"
+
+
+def _ruta_assets_productos(vault: VaultManager) -> Path:
+    """Devuelve el directorio de fotos de productos, creándolo si falta."""
+    ruta = vault.vault_path / "assets" / "productos"
+    ruta.mkdir(parents=True, exist_ok=True)
+    return ruta
+
+
+async def _guardar_foto_producto(
+    vault: VaultManager,
+    item_id: str,
+    archivo: UploadFile,
+) -> str:
+    """Persiste la foto de un producto y devuelve la ruta relativa al vault."""
+    datos = await archivo.read()
+    extension = _extension_segura(archivo.content_type)
+    ruta = _ruta_assets_productos(vault) / f"{item_id}.{extension}"
+    await asyncio.to_thread(ruta.write_bytes, datos)
+    return f"assets/productos/{item_id}.{extension}"
+
+
+async def _actualizar_item(
+    vault: VaultManager,
+    item_id: str,
+    modificador,
+) -> Consumible:
+    """Lee un ítem, aplica una función modificadora y lo vuelve a escribir.
+
+    La función modificador recibe (item, cuerpo) y debe devolver
+    (item, cuerpo) actualizados.
+    """
+    path = await vault._find_item_path(item_id)
+    if path is None:
+        raise KeyError(f"Ítem no encontrado: {item_id}")
+    lock = await vault._get_lock(path)
+    async with lock:
+        item, cuerpo = await vault._read_doc(path, Consumible)
+        item, cuerpo = await modificador(item, cuerpo)
+        await vault._write_doc(path, item, cuerpo)
+    return item
 
 
 def _cuerpo_item_off(producto: ProductoOFF) -> str:
@@ -133,9 +226,53 @@ async def _crear_item_desde_off(
     return nuevo
 
 
+async def _sugerencias_fusion(
+    vault: VaultManager, limite: int = 10
+) -> list[SugerenciaFusion]:
+    """Devuelve los primeros N ítems del vault ordenados por nombre."""
+    items = await vault.list_items()
+    items.sort(key=lambda i: i.nombre.casefold())
+    return [
+        SugerenciaFusion(
+            id=item.id, nombre=item.nombre, ean_barcode=item.ean_barcode
+        )
+        for item in items[:limite]
+    ]
+
+
+async def _resolver_precio_desde_foto(
+    parser: Optional[ReceiptParser],
+    foto_precio: Optional[UploadFile],
+    precio_param: Optional[float],
+) -> Optional[float]:
+    """Devuelve el precio final priorizando la extracción por IA sobre el parámetro.
+
+    Si hay foto de precio y un parser configurado, intenta extraer el importe.
+    Cuando el importe detectado es mayor que 0, sobrescribe el precio recibido.
+    """
+    if foto_precio is None or parser is None:
+        return precio_param
+    datos = await foto_precio.read()
+    mime_type = foto_precio.content_type or "image/jpeg"
+    try:
+        extraido = await extraer_precio_desde_imagen(parser, datos, mime_type)
+    except Exception as exc:
+        logger.warning("No se pudo extraer el precio de la imagen: %s", exc)
+        return precio_param
+    if extraido is not None and extraido > 0:
+        return extraido
+    return precio_param
+
+
 @router.get("/{ean}", response_model=RespuestaBarcode)
-async def escanear_barcode(request: Request, ean: str) -> RespuestaBarcode:
-    """Resuelve un código de barras: vault primero, Open Food Facts después."""
+async def escanear_barcode(
+    request: Request, ean: str
+) -> RespuestaBarcode | JSONResponse:
+    """Resuelve un código de barras: vault primero, Open Food Facts después.
+
+    Si el EAN no existe ni en el vault ni en OFF, devuelve 404 con una lista
+    de sugerencias de ítems existentes para posible fusión.
+    """
     vault = _vault(request)
     existente = await vault.get_item_by_ean(ean)
     if existente is not None:
@@ -150,9 +287,13 @@ async def escanear_barcode(request: Request, ean: str) -> RespuestaBarcode:
             detail=f"Error consultando Open Food Facts: {exc}",
         ) from exc
     if datos is None:
-        raise HTTPException(
+        return JSONResponse(
             status_code=404,
-            detail=f"Producto no encontrado en Open Food Facts: {ean}",
+            content=RespuestaNoEncontrado(
+                detail="Producto no encontrado",
+                ean=ean,
+                sugerencias=await _sugerencias_fusion(vault),
+            ).model_dump(),
         )
     producto = map_off_to_consumible(datos, ean)
     item = await _crear_item_desde_off(vault, producto)
@@ -161,11 +302,14 @@ async def escanear_barcode(request: Request, ean: str) -> RespuestaBarcode:
     )
 
 
-@router.post("/consume", response_model=ResultadoConsumo)
+@router.post("/consume", response_model=RespuestaConsumoBarcode)
 async def consumir_por_barcode(
     request: Request, peticion: PeticionConsumoBarcode
-) -> ResultadoConsumo:
-    """Consume unidades de un ítem resolviéndolo por su código de barras."""
+) -> RespuestaConsumoBarcode:
+    """Consume unidades de un ítem resolviéndolo por su código de barras.
+
+    Tras consumir, intenta tachar el ítem de la lista de la compra.
+    """
     vault = _vault(request)
     item = await vault.get_item_by_ean(peticion.ean)
     if item is None:
@@ -173,4 +317,127 @@ async def consumir_por_barcode(
             status_code=404,
             detail=f"Ítem no encontrado para el EAN: {peticion.ean}",
         )
-    return await vault.consume_item(item.id, peticion.cantidad)
+    resultado = await vault.consume_item(item.id, peticion.cantidad)
+    quitado_de_lista = await vault.check_shopping_list_entry(item.id)
+    return RespuestaConsumoBarcode(
+        resultado=resultado, quitado_de_lista=quitado_de_lista
+    )
+
+
+@router.post("/register", response_model=Consumible)
+async def registrar_producto_barcode(
+    request: Request,
+    ean: str = Form(...),
+    nombre: str = Form(...),
+    categoria: str = Form(default="despensa_seca"),
+    ubicacion: str = Form(default="despensa"),
+    unidad: str = Form(default="unidades"),
+    precio: Optional[float] = Form(default=None),
+    cantidad: float = Form(default=1.0),
+    fecha_caducidad: Optional[date] = Form(default=None),
+    foto_producto: Optional[UploadFile] = File(default=None),
+    foto_precio: Optional[UploadFile] = File(default=None),
+    merge_target_id: Optional[str] = Form(default=None),
+) -> Consumible:
+    """Registra manualmente un producto a partir de su EAN o lo fusiona con uno existente.
+
+    Si se proporciona `merge_target_id`, el EAN se añade al ítem existente y se
+    registra una compra. En caso contrario se crea un nuevo Consumible con el
+    EAN y, opcionalmente, un primer lote.
+
+    Las fotos del producto se guardan en `vault/assets/productos/`. Si se envía
+    `foto_precio` y hay un proveedor de IA configurado, se intenta extraer el
+    importe y sobrescribir el precio indicado.
+    """
+    vault = _vault(request)
+
+    # Validación de catálogos
+    from backend.ai_vision_parser import (
+        CATEGORIAS_VALIDAS,
+        UBICACIONES_VALIDAS,
+        UNIDADES_VALIDAS,
+    )
+
+    if categoria not in CATEGORIAS_VALIDAS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Categoría no válida: {categoria}",
+        )
+    if ubicacion not in UBICACIONES_VALIDAS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ubicación no válida: {ubicacion}",
+        )
+    if unidad not in UNIDADES_VALIDAS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unidad no válida: {unidad}",
+        )
+
+    parser = _receipt_parser(request)
+    precio_final = await _resolver_precio_desde_foto(parser, foto_precio, precio)
+
+    if merge_target_id is not None:
+        existente = await vault.get_item(merge_target_id)
+        if existente is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ítem destino de fusión no encontrado: {merge_target_id}",
+            )
+
+        async def _fusionar(item: Consumible, cuerpo: str) -> tuple[Consumible, str]:
+            item.ean_barcode = ean
+            item.ultima_actualizacion = ahora_utc()
+            if foto_producto is not None:
+                ruta_relativa = await _guardar_foto_producto(
+                    vault, item.id, foto_producto
+                )
+                cuerpo = (
+                    f"{cuerpo.rstrip()}\n\n![Foto del producto]({ruta_relativa})\n"
+                )
+            return item, cuerpo
+
+        await _actualizar_item(vault, merge_target_id, _fusionar)
+
+        if cantidad > 0 and precio_final is not None and precio_final >= 0:
+            await vault.add_purchase(
+                merge_target_id, cantidad, precio_final, fecha_caducidad
+            )
+
+        return await vault.get_item(merge_target_id)
+
+    # Creación de un ítem nuevo
+    slug = _slugificar(nombre)
+    item_id = f"item_{slug}_{uuid.uuid4().hex[:8]}"
+    while await vault.get_item(item_id) is not None:
+        item_id = f"item_{slug}_{uuid.uuid4().hex[:8]}"
+
+    cuerpo_lineas = [f"# {nombre}", ""]
+    ruta_foto: Optional[str] = None
+    if foto_producto is not None:
+        ruta_foto = await _guardar_foto_producto(vault, item_id, foto_producto)
+        cuerpo_lineas.append(f"![Foto del producto]({ruta_foto})")
+        cuerpo_lineas.append("")
+    cuerpo_lineas.append("Registro manual desde escaneo de código de barras.\n")
+
+    nuevo = Consumible(
+        id=item_id,
+        nombre=nombre,
+        ean_barcode=ean,
+        categoria=categoria,
+        ubicacion=ubicacion,
+        stock_actual=0.0,
+        stock_minimo=1.0,
+        unidad=unidad,
+        lotes=[],
+        auto_lista_compra=True,
+        ultima_actualizacion=ahora_utc(),
+    )
+    ruta = vault.vault_path / "inventario" / ubicacion / f"{item_id}.md"
+    await vault._write_doc(ruta, nuevo, "\n".join(cuerpo_lineas))
+
+    if cantidad > 0 and precio_final is not None and precio_final >= 0:
+        await vault.add_purchase(item_id, cantidad, precio_final, fecha_caducidad)
+
+    logger.info("Ítem registrado manualmente: %s (%s)", item_id, ruta)
+    return await vault.get_item(item_id)

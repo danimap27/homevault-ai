@@ -480,6 +480,72 @@ def build_receipt_parser(vault: VaultManager, settings: Settings) -> ReceiptPars
     return ReceiptParser(vault, build_llm_client(settings))
 
 
+# --- Extracción de precio desde imagen --------------------------------------------
+
+
+_PROMPT_PRECIO_IMAGEN = (
+    "Devuelve SOLO el precio total visible en esta imagen como número decimal. "
+    "Si no hay precio, devuelve null."
+)
+
+
+async def extraer_precio_desde_imagen(
+    parser: ReceiptParser,
+    imagen_bytes: bytes,
+    mime_type: str = "image/jpeg",
+) -> Optional[float]:
+    """Envía una imagen al LLM y devuelve el precio total detectado.
+
+    El prompt fuerza una respuesta numérica o null. Se aplican heurísticas
+    básicas para limpiar símbolos de moneda y normalizar separadores decimales.
+
+    Args:
+        parser: ReceiptParser con un cliente LLM inyectable.
+        imagen_bytes: Contenido binario de la imagen.
+        mime_type: Tipo MIME de la imagen.
+
+    Returns:
+        Precio como float si se detecta y es mayor que 0, None en cualquier
+        otro caso.
+    """
+    respuesta = await parser.llm.completar(
+        _PROMPT_PRECIO_IMAGEN,
+        imagen=imagen_bytes,
+        mime_type=mime_type,
+    )
+    texto = respuesta.strip()
+    if not texto or texto.lower() in ("null", "none"):
+        return None
+
+    # Elimina símbolos de moneda comunes y espacios, conservando dígitos y
+    # separadores decimales.
+    limpio = re.sub(r"[^\d.,]", "", texto)
+    if not limpio:
+        return None
+
+    # Normaliza separadores decimales: el último separador es el decimal.
+    if "," in limpio and "." in limpio:
+        if limpio.rfind(",") > limpio.rfind("."):
+            limpio = limpio.replace(".", "").replace(",", ".")
+        else:
+            limpio = limpio.replace(",", "")
+    elif "," in limpio:
+        # Puede ser decimal o separador de miles sin decimales. Asumimos que
+        # una sola coma con dos dígitos a la derecha es decimal; en otro caso,
+        # si hay más de dos decimales, se trata como separador de miles.
+        partes = limpio.split(",")
+        if len(partes) == 2 and len(partes[1]) <= 2:
+            limpio = limpio.replace(",", ".")
+        else:
+            limpio = limpio.replace(",", "")
+
+    try:
+        valor = float(limpio)
+    except ValueError:
+        return None
+    return valor if valor > 0 else None
+
+
 # --- Efecto en cascada del registro -----------------------------------------------
 
 

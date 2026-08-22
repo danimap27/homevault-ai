@@ -14,10 +14,11 @@ from pydantic import BaseModel, Field
 
 # --- Catálogos de valores permitidos -----------------------------------------
 
-CategoriaItem = Literal[
-    "lacteos", "congelados", "despensa_seca", "limpieza",
-    "recambios_hogar", "botiquin",
-]
+# ``CategoriaItem`` dejó de ser un Literal en favor de un catálogo dinámico
+# gestionado por ``backend.categorias.CategoriaManager``. Se conserva el alias
+# para no romper los imports existentes; la validación contra categorías
+# permitidas ahora vive en el gestor del vault.
+CategoriaItem = str
 Ubicacion = Literal["nevera", "congelador", "despensa", "bano", "trastero"]
 Unidad = Literal["litros", "kg", "gramos", "unidades", "pastillas", "dosis"]
 CategoriaReceta = Literal["desayuno", "comida", "cena", "snack"]
@@ -39,6 +40,7 @@ class Lote(BaseModel):
     cantidad: float
     fecha_caducidad: Optional[date] = None
     fecha_adquisicion: Optional[date] = None
+    supermercado: Optional[str] = None
 
 
 class Consumible(BaseModel):
@@ -165,6 +167,30 @@ class Tarea(BaseModel):
     bloqueada_por_stock: bool = False
 
 
+# --- Resultados de recetas --------------------------------------------------
+
+
+class IngredienteFaltante(BaseModel):
+    """Ingrediente que falta para completar una receta."""
+
+    item_id: Optional[str] = None
+    nombre: str
+    cantidad: float
+    unidad: str
+
+
+class RecetaPosible(BaseModel):
+    """Receta ordenada según los ingredientes disponibles en inventario."""
+
+    receta: Receta
+    ingredientes_satisfechos: int
+    ingredientes_faltantes: int
+    score: float
+    faltantes_para_compra: list[IngredienteFaltante] = Field(
+        default_factory=list
+    )
+
+
 # --- Resultados de operaciones del VaultManager -------------------------------
 
 
@@ -189,6 +215,7 @@ class ResultadoCompra(BaseModel):
     cantidad: float
     stock_actual: float
     tachado_de_lista_compra: bool
+    supermercado: Optional[str] = None
 
 
 class ItemHuerfano(BaseModel):

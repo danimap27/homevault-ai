@@ -14,7 +14,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from backend.planner import (
+    InsufficientStockError,
     Planner,
+    ResultadoAsignarPlan,
     ResultadoBatchCooking,
     ResultadoEvento,
     SugerenciaRescate,
@@ -83,3 +85,42 @@ async def modo_evento(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class PeticionAsignarPlan(BaseModel):
+    """Cuerpo de POST /api/planner/assign."""
+
+    semana_iso: str
+    dia: str
+    toma: str
+    receta_id: str
+    raciones: int = Field(ge=1)
+
+
+@router.post("/assign", response_model=ResultadoAsignarPlan)
+async def asignar_receta_al_plan(
+    request: Request, peticion: PeticionAsignarPlan
+) -> ResultadoAsignarPlan:
+    """Asigna una receta a un slot del planificador y añade faltantes a compra."""
+    try:
+        return await _planner(request).assign_recipe_to_plan(
+            semana_iso=peticion.semana_iso,
+            dia=peticion.dia,
+            toma=peticion.toma,
+            receta_id=peticion.receta_id,
+            raciones=peticion.raciones,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except InsufficientStockError as exc:
+        # No debería ocurrir porque assign no consume stock, pero se deja
+        # controlado por robustez.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "mensaje": "Stock insuficiente para la receta",
+                "faltantes": [f.model_dump() for f in exc.faltantes],
+            },
+        ) from exc

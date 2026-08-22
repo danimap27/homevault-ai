@@ -32,20 +32,25 @@ from backend.ai_vision_parser import (
     ResultadoRegistroCompra,
     build_llm_client,
 )
+from backend.categorias import Categoria, CategoriaManager
 from backend.config import get_settings
 from backend.git_sync import GitSync
 from backend.google_sync import GoogleSync, build_google_sync
+from backend.local_barcodes import LocalBarcode, LocalBarcodeManager
 from backend.models import (
     Consumible,
     ConsumibleRequerido,
     EntradaListaCompra,
     Frecuencia,
+    Ingrediente,
+    IngredienteFaltante,
     ItemCaducidad,
     ItemHuerfano,
     Perfil,
     PlanSemanal,
     Prioridad,
     Receta,
+    RecetaPosible,
     ResultadoCompra,
     ResultadoConsumo,
     Tarea,
@@ -62,6 +67,13 @@ from backend.routers import (
     ws,
 )
 from backend.perfiles import PerfilManager
+from backend.planner import (
+    InsufficientStockError,
+    Planner,
+    ResultadoAsignarPlan,
+    ResultadoCocinarReceta,
+)
+from backend.supermercados import Supermercado, SupermercadoManager
 from backend.vault_manager import VaultManager
 from backend.watcher import VaultWatcher, WebSocketManager
 
@@ -86,6 +98,7 @@ class PeticionCompra(BaseModel):
     cantidad: float = Field(gt=0)
     precio_unitario: float = Field(ge=0)
     fecha_caducidad: Optional[date] = None
+    supermercado: Optional[str] = None
 
 
 class PeticionCompletarTarea(BaseModel):
@@ -160,6 +173,7 @@ class PeticionTicketTexto(BaseModel):
     texto: str
     comercio: Optional[str] = None
     total: Optional[float] = Field(default=None, ge=0)
+    supermercado: Optional[str] = None
 
 
 async def _bucle_polling(sync: GoogleSync, intervalo_s: int) -> None:
@@ -296,6 +310,16 @@ def _vault(request: Request) -> VaultManager:
     return request.app.state.vault
 
 
+def _categoria_manager(request: Request) -> CategoriaManager:
+    """Recupera el gestor de categorías desde el VaultManager de la app."""
+    return request.app.state.vault.categoria_manager
+
+
+def _planner(request: Request) -> Planner:
+    """Construye el Planner sobre el VaultManager de la petición."""
+    return Planner(_vault(request))
+
+
 def _sync(request: Request) -> GoogleSync:
     """Recupera el GoogleSync del estado de la app."""
     return request.app.state.google_sync
@@ -308,6 +332,16 @@ def _perfil_manager(request: Request) -> PerfilManager:
     temporales compartan el mismo manager entre ejecuciones.
     """
     return PerfilManager(request.app.state.vault.vault_path)
+
+
+def _supermercado_manager(request: Request) -> SupermercadoManager:
+    """Crea un SupermercadoManager ligado al vault actual de la petición."""
+    return SupermercadoManager(request.app.state.vault.vault_path)
+
+
+def _local_barcode_manager(request: Request) -> LocalBarcodeManager:
+    """Crea un LocalBarcodeManager ligado al vault actual de la petición."""
+    return LocalBarcodeManager(request.app.state.vault.vault_path)
 
 
 def _slugify(texto: str) -> str:
@@ -435,6 +469,7 @@ async def registrar_compra(
         peticion.cantidad,
         peticion.precio_unitario,
         peticion.fecha_caducidad,
+        supermercado=peticion.supermercado,
     )
 
 
@@ -444,6 +479,49 @@ async def lista_compra(request: Request) -> list[EntradaListaCompra]:
     return await _vault(request).get_shopping_list()
 
 
+class PeticionActualizarListaCompra(BaseModel):
+    """Cuerpo de PUT /api/shopping-list/{item_id}."""
+
+    cantidad: Optional[float] = None
+    unidad: Optional[str] = None
+    categoria: Optional[str] = None
+
+
+@app.delete("/api/shopping-list/{item_id}", status_code=200)
+async def borrar_entrada_lista(
+    request: Request, item_id: str
+) -> dict:
+    """Elimina las líneas pendientes de la lista de la compra."""
+    eliminadas = await _vault(request).remove_shopping_list_entry(item_id)
+    if eliminadas == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Entrada pendiente no encontrada: {item_id}",
+        )
+    return {"item_id": item_id, "eliminadas": eliminadas}
+
+
+@app.put("/api/shopping-list/{item_id}")
+async def editar_entrada_lista(
+    request: Request,
+    item_id: str,
+    peticion: PeticionActualizarListaCompra,
+) -> dict:
+    """Edita una línea pendiente existente de la lista de la compra."""
+    editadas = await _vault(request).update_shopping_list_entry(
+        item_id,
+        cantidad=peticion.cantidad,
+        unidad=peticion.unidad,
+        categoria=peticion.categoria,
+    )
+    if editadas == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Entrada pendiente no encontrada: {item_id}",
+        )
+    return {"item_id": item_id, "editadas": editadas}
+
+
 # --- Ingesta de tickets con IA (Fase 3) -------------------------------------------
 
 
@@ -451,9 +529,9 @@ async def lista_compra(request: Request) -> list[EntradaListaCompra]:
 async def ingerir_ticket(request: Request) -> ResultadoRegistroCompra:
     """Ingesta un ticket y lo registra en cascada (inventario + gastos).
 
-    Admite dos formatos: imagen del ticket como multipart/form-data (campo
-    "imagen") o texto en lenguaje natural como JSON ({texto, comercio?,
-    total?}).
+    Admite dos formatos: imagen del ticket como multipart/form-data (campos
+    "imagen" y opcional "supermercado") o texto en lenguaje natural como JSON
+    ({texto, comercio?, total?, supermercado?}).
     """
     parser: Optional[ReceiptParser] = getattr(
         request.app.state, "receipt_parser", None
@@ -463,6 +541,7 @@ async def ingerir_ticket(request: Request) -> ResultadoRegistroCompra:
             status_code=503,
             detail="Proveedor de IA no configurado (AI_PROVIDER)",
         )
+    supermercado: Optional[str] = None
     content_type = request.headers.get("content-type", "")
     try:
         if content_type.startswith("multipart/form-data"):
@@ -473,18 +552,22 @@ async def ingerir_ticket(request: Request) -> ResultadoRegistroCompra:
                     status_code=400,
                     detail="Falta el campo de imagen en el multipart",
                 )
+            supermercado_val = formulario.get("supermercado")
+            if isinstance(supermercado_val, str):
+                supermercado = supermercado_val or None
             ticket = await parser.parse_ticket_from_image(
                 await archivo.read(),
                 mime_type=archivo.content_type or "image/jpeg",
             )
         else:
             cuerpo = PeticionTicketTexto.model_validate(await request.json())
+            supermercado = cuerpo.supermercado
             ticket = await parser.parse_ticket_from_text(
                 cuerpo.texto, comercio=cuerpo.comercio, total=cuerpo.total
             )
     except ErrorParseoTicket as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return await parser.register_purchase(ticket)
+    return await parser.register_purchase(ticket, supermercado=supermercado)
 
 
 # --- Tareas y sincronización con Google (Fase 2) --------------------------------
@@ -887,3 +970,447 @@ async def verificar_pin_perfil(
             status_code=404, detail=f"Perfil no encontrado: {perfil_id}"
         ) from exc
     return {"valido": valido}
+
+
+# --- Supermercados -----------------------------------------------------------
+
+
+class CrearSupermercado(BaseModel):
+    """Cuerpo de POST /api/supermarkets."""
+
+    nombre: str
+
+
+class ActualizarSupermercado(BaseModel):
+    """Cuerpo de PUT /api/supermarkets/{id}."""
+
+    nombre: Optional[str] = None
+    predeterminado: Optional[bool] = None
+
+
+@app.get("/api/supermarkets", response_model=list[Supermercado])
+async def listar_supermercados(request: Request) -> list[Supermercado]:
+    """Lista todos los supermercados del vault."""
+    return _supermercado_manager(request).listar()
+
+
+@app.post("/api/supermarkets", response_model=Supermercado, status_code=201)
+async def crear_supermercado(
+    request: Request, peticion: CrearSupermercado
+) -> Supermercado:
+    """Crea un nuevo supermercado."""
+    return _supermercado_manager(request).crear(peticion.nombre)
+
+
+@app.put("/api/supermarkets/{item_id}", response_model=Supermercado)
+async def actualizar_supermercado(
+    request: Request,
+    item_id: str,
+    peticion: ActualizarSupermercado,
+) -> Supermercado:
+    """Actualiza un supermercado existente."""
+    try:
+        return _supermercado_manager(request).actualizar(
+            item_id,
+            nombre=peticion.nombre,
+            predeterminado=peticion.predeterminado,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Supermercado no encontrado: {item_id}"
+        ) from exc
+
+
+@app.delete("/api/supermarkets/{item_id}", status_code=204)
+async def borrar_supermercado(request: Request, item_id: str) -> None:
+    """Elimina un supermercado."""
+    borrado = _supermercado_manager(request).borrar(item_id)
+    if not borrado:
+        raise HTTPException(
+            status_code=404, detail=f"Supermercado no encontrado: {item_id}"
+        )
+
+
+# --- Base de datos local de códigos de barras --------------------------------
+
+
+@app.get("/api/local-barcodes", response_model=list[LocalBarcode])
+async def listar_local_barcodes(request: Request) -> list[LocalBarcode]:
+    """Lista todos los códigos de barras locales."""
+    return _local_barcode_manager(request).listar()
+
+
+@app.get("/api/local-barcodes/{ean}", response_model=LocalBarcode)
+async def obtener_local_barcode(request: Request, ean: str) -> LocalBarcode:
+    """Devuelve un código de barras local por su EAN."""
+    barcode = _local_barcode_manager(request).obtener(ean)
+    if barcode is None:
+        raise HTTPException(
+            status_code=404, detail=f"Código de barras no encontrado: {ean}"
+        )
+    return barcode
+
+
+@app.post("/api/local-barcodes", response_model=LocalBarcode, status_code=201)
+async def crear_local_barcode(
+    request: Request, barcode: LocalBarcode
+) -> LocalBarcode:
+    """Crea un nuevo código de barras local."""
+    try:
+        return _local_barcode_manager(request).crear(barcode)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.put("/api/local-barcodes/{ean}", response_model=LocalBarcode)
+async def actualizar_local_barcode(
+    request: Request, ean: str, barcode: LocalBarcode
+) -> LocalBarcode:
+    """Actualiza un código de barras local existente."""
+    try:
+        return _local_barcode_manager(request).actualizar(
+            ean, **barcode.model_dump(exclude={"ean"})
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Código de barras no encontrado: {ean}"
+        ) from exc
+
+
+@app.delete("/api/local-barcodes/{ean}", status_code=204)
+async def borrar_local_barcode(request: Request, ean: str) -> None:
+    """Elimina un código de barras local."""
+    borrado = _local_barcode_manager(request).borrar(ean)
+    if not borrado:
+        raise HTTPException(
+            status_code=404, detail=f"Código de barras no encontrado: {ean}"
+        )
+
+
+# --- Categorías dinámicas -----------------------------------------------------
+
+
+class CrearCategoria(BaseModel):
+    """Cuerpo de POST /api/categories."""
+
+    id: Optional[str] = None
+    nombre: str
+    color: Optional[str] = None
+    icono: Optional[str] = None
+    ubicacion_default: Optional[str] = None
+    orden: Optional[int] = None
+
+
+class ActualizarCategoria(BaseModel):
+    """Cuerpo de PUT /api/categories/{id}."""
+
+    nombre: Optional[str] = None
+    color: Optional[str] = None
+    icono: Optional[str] = None
+    ubicacion_default: Optional[str] = None
+    orden: Optional[int] = None
+
+
+class RespuestaBorrarCategoria(BaseModel):
+    """Respuesta de DELETE /api/categories/{id}."""
+
+    eliminada: bool
+    items_afectados: list[str] = Field(default_factory=list)
+
+
+@app.get("/api/categories", response_model=list[Categoria])
+async def listar_categorias(request: Request) -> list[Categoria]:
+    """Lista todas las categorías del vault ordenadas."""
+    return _categoria_manager(request).listar()
+
+
+@app.post("/api/categories", response_model=Categoria, status_code=201)
+async def crear_categoria(
+    request: Request, peticion: CrearCategoria
+) -> Categoria:
+    """Crea una nueva categoría en el catálogo dinámico."""
+    try:
+        return _categoria_manager(request).crear(
+            nombre=peticion.nombre,
+            id=peticion.id,
+            color=peticion.color,
+            icono=peticion.icono,
+            ubicacion_default=peticion.ubicacion_default,
+            orden=peticion.orden,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/categories/{categoria_id}", response_model=Categoria)
+async def actualizar_categoria(
+    request: Request,
+    categoria_id: str,
+    peticion: ActualizarCategoria,
+) -> Categoria:
+    """Actualiza los campos editables de una categoría."""
+    manager = _categoria_manager(request)
+    try:
+        return manager.actualizar(
+            categoria_id, **peticion.model_dump(exclude_unset=True)
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Categoría no encontrada: {categoria_id}"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/categories/{categoria_id}", response_model=RespuestaBorrarCategoria)
+async def borrar_categoria(
+    request: Request,
+    categoria_id: str,
+    reemplazar_por: Optional[str] = None,
+) -> RespuestaBorrarCategoria:
+    """Elimina una categoría. Si tiene ítems asociados devuelve 409.
+
+    Si se pasa ``reemplazar_por``, todos los ítems de la categoría se
+    reasignan a esa categoría antes de borrarla.
+    """
+    manager = _categoria_manager(request)
+    if not manager.existe(categoria_id):
+        raise HTTPException(
+            status_code=404, detail=f"Categoría no encontrada: {categoria_id}"
+        )
+
+    vault = _vault(request)
+    items = await vault.list_items()
+    afectados = [i.id for i in items if i.categoria == categoria_id]
+
+    if afectados and reemplazar_por is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "categoria": categoria_id,
+                "items_afectados": afectados,
+            },
+        )
+
+    if reemplazar_por is not None:
+        if not manager.existe(reemplazar_por):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Categoría de reemplazo no válida: {reemplazar_por}",
+            )
+        for item_id in afectados:
+            await vault.move_item(item_id, nueva_categoria=reemplazar_por)
+
+    manager.borrar(categoria_id)
+    return RespuestaBorrarCategoria(
+        eliminada=True, items_afectados=afectados
+    )
+
+
+# --- CRUD de inventario (crear/editar/borrar/mover) ---------------------------
+
+
+class ActualizarItem(BaseModel):
+    """Cuerpo de PUT /api/inventory/{item_id}."""
+
+    nombre: Optional[str] = None
+    categoria: Optional[str] = None
+    ubicacion: Optional[str] = None
+    stock_minimo: Optional[float] = None
+    unidad: Optional[str] = None
+    precio_unitario_estimado: Optional[float] = None
+    dias_promedio_consumo: Optional[float] = None
+    auto_lista_compra: Optional[bool] = None
+    tags: Optional[list[str]] = None
+    ean_barcode: Optional[str] = None
+
+
+class MoverItem(BaseModel):
+    """Cuerpo de POST /api/inventory/{item_id}/move."""
+
+    categoria: Optional[str] = None
+    ubicacion: Optional[str] = None
+
+
+@app.post("/api/inventory", response_model=Consumible, status_code=201)
+async def crear_item(request: Request, item: Consumible) -> Consumible:
+    """Crea un nuevo ítem de inventario en ``inventario/<ubicacion>/<id>.md``."""
+    try:
+        return await _vault(request).create_item(item)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/inventory/{item_id}", response_model=Consumible)
+async def actualizar_item(
+    request: Request, item_id: str, peticion: ActualizarItem
+) -> Consumible:
+    """Actualiza los campos editables de un ítem preservando el cuerpo.
+
+    Si la petición cambia ``ubicacion`` y/o ``categoria``, se delega en
+    ``move_item`` (con validación de categoría contra el catálogo dinámico);
+    el resto de campos editables se aplican con ``update_item``.
+    """
+    vault = _vault(request)
+    cambios = {
+        k: v
+        for k, v in peticion.model_dump(exclude_unset=True).items()
+        if v is not None
+    }
+    ubicacion_nueva = cambios.pop("ubicacion", None)
+    categoria_nueva = cambios.pop("categoria", None)
+
+    try:
+        if ubicacion_nueva is not None or categoria_nueva is not None:
+            await vault.move_item(
+                item_id,
+                nueva_categoria=categoria_nueva,
+                nueva_ubicacion=ubicacion_nueva,
+            )
+        if cambios:
+            return await vault.update_item(item_id, cambios)
+        item = await vault.get_item(item_id)
+        if item is None:
+            raise KeyError(f"Ítem no encontrado: {item_id}")
+        return item
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/inventory/{item_id}", status_code=204)
+async def borrar_item(request: Request, item_id: str) -> None:
+    """Elimina el archivo .md de un ítem de inventario."""
+    borrado = await _vault(request).delete_item(item_id)
+    if not borrado:
+        raise HTTPException(
+            status_code=404, detail=f"Ítem no encontrado: {item_id}"
+        )
+
+
+@app.post("/api/inventory/{item_id}/move", response_model=Consumible)
+async def mover_item(
+    request: Request, item_id: str, peticion: MoverItem
+) -> Consumible:
+    """Mueve un ítem a otra ubicación y/o cambia su categoría."""
+    try:
+        return await _vault(request).move_item(
+            item_id,
+            nueva_categoria=peticion.categoria,
+            nueva_ubicacion=peticion.ubicacion,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# --- CRUD de recetas ----------------------------------------------------------
+
+
+class ActualizarReceta(BaseModel):
+    """Cuerpo de PUT /api/recipes/{id}."""
+
+    titulo: Optional[str] = None
+    categoria: Optional[str] = None
+    tiempo_minutos: Optional[int] = None
+    raciones: Optional[int] = None
+    calorias_racion: Optional[int] = None
+    ingredientes: Optional[list[Ingrediente]] = None
+    tags: Optional[list[str]] = None
+
+
+class CocinarReceta(BaseModel):
+    """Cuerpo de POST /api/recipes/{id}/cook."""
+
+    raciones: Optional[int] = None
+
+
+@app.post("/api/recipes", response_model=Receta, status_code=201)
+async def crear_receta(request: Request, receta: Receta) -> Receta:
+    """Crea una nueva receta en ``recetas/<id>.md``."""
+    try:
+        return await _vault(request).create_receta(receta)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/recipes/possible", response_model=list[RecetaPosible])
+async def recetas_posibles(request: Request) -> list[RecetaPosible]:
+    """Recetas ordenadas por los ingredientes disponibles en inventario."""
+    return await _planner(request).possible_recipes()
+
+
+@app.get("/api/recipes/{id}", response_model=Receta)
+async def obtener_receta(request: Request, id: str) -> Receta:
+    """Devuelve una receta por su id."""
+    receta = await _vault(request).get_receta(id)
+    if receta is None:
+        raise HTTPException(
+            status_code=404, detail=f"Receta no encontrada: {id}"
+        )
+    return receta
+
+
+@app.put("/api/recipes/{id}", response_model=Receta)
+async def actualizar_receta(
+    request: Request, id: str, peticion: ActualizarReceta
+) -> Receta:
+    """Actualiza los campos editables de una receta."""
+    cambios = peticion.model_dump(exclude_unset=True)
+    try:
+        return await _vault(request).update_receta(id, cambios)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/recipes/{id}", status_code=204)
+async def borrar_receta(request: Request, id: str) -> None:
+    """Elimina el archivo .md de una receta."""
+    borrada = await _vault(request).delete_receta(id)
+    if not borrada:
+        raise HTTPException(
+            status_code=404, detail=f"Receta no encontrada: {id}"
+        )
+
+
+@app.get("/api/recipes/possible", response_model=list[RecetaPosible])
+async def recetas_posibles(request: Request) -> list[RecetaPosible]:
+    """Recetas ordenadas por los ingredientes disponibles en inventario."""
+    return await _planner(request).possible_recipes()
+
+
+@app.post("/api/recipes/{id}/cook", response_model=ResultadoCocinarReceta)
+async def cocinar_receta(
+    request: Request, id: str, peticion: CocinarReceta
+) -> ResultadoCocinarReceta:
+    """Consume del inventario los ingredientes de una receta.
+
+    Es transaccional: si falta stock para algún ingrediente no se consume
+    nada y se devuelve 409 con el listado de faltantes.
+    """
+    try:
+        return await _planner(request).cook_recipe(id, raciones=peticion.raciones)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except InsufficientStockError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "mensaje": "Stock insuficiente para cocinar la receta",
+                "faltantes": [
+                    f.model_dump() for f in exc.faltantes
+                ],
+            },
+        ) from exc

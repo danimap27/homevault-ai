@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, Mic, Send } from "lucide-react";
+import { Camera, Mic, Send, Store } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
+import type { Supermercado } from "@/lib/types";
 
 type EstadoEnvio =
   | { tipo: "idle" }
@@ -10,10 +11,14 @@ type EstadoEnvio =
   | { tipo: "ok"; mensaje: string }
   | { tipo: "error"; mensaje: string };
 
+const SUPER_AUTO = "";
+
 export function BarraComandos() {
   const [abierta, setAbierta] = useState(false);
   const [texto, setTexto] = useState("");
   const [estado, setEstado] = useState<EstadoEnvio>({ tipo: "idle" });
+  const [supermercados, setSupermercados] = useState<Supermercado[]>([]);
+  const [supermercado, setSupermercado] = useState<string>(SUPER_AUTO);
   const inputRef = useRef<HTMLInputElement>(null);
   const inputFotoRef = useRef<HTMLInputElement>(null);
 
@@ -32,7 +37,14 @@ export function BarraComandos() {
   useEffect(() => {
     if (abierta) {
       setEstado({ tipo: "idle" });
+      setTexto("");
+      setSupermercado(SUPER_AUTO);
       setTimeout(() => inputRef.current?.focus(), 50);
+      api.getSupermercados().then((lista) => {
+        setSupermercados(lista);
+        const predeterminado = lista.find((s) => s.predeterminado);
+        if (predeterminado) setSupermercado(predeterminado.id);
+      });
     }
   }, [abierta]);
 
@@ -41,7 +53,12 @@ export function BarraComandos() {
     if (!limpio) return;
     setEstado({ tipo: "enviando" });
     try {
-      await api.ingerirTicketTexto(limpio);
+      await api.ingerirTicketTexto(
+        limpio,
+        undefined,
+        undefined,
+        supermercado || undefined,
+      );
       setEstado({ tipo: "ok", mensaje: "Ticket registrado en el vault" });
       setTexto("");
     } catch (err) {
@@ -53,24 +70,27 @@ export function BarraComandos() {
             : "No se pudo conectar con la API",
       });
     }
-  }, [texto]);
+  }, [texto, supermercado]);
 
-  const enviarFoto = useCallback(async (archivo: File | undefined) => {
-    if (!archivo) return;
-    setEstado({ tipo: "enviando" });
-    try {
-      await api.ingerirTicketImagen(archivo);
-      setEstado({ tipo: "ok", mensaje: "Foto del ticket procesada" });
-    } catch (err) {
-      setEstado({
-        tipo: "error",
-        mensaje:
-          err instanceof ErrorApi
-            ? `Error ${err.status}: ${err.message}`
-            : "No se pudo subir la foto",
-      });
-    }
-  }, []);
+  const enviarFoto = useCallback(
+    async (archivo: File | undefined) => {
+      if (!archivo) return;
+      setEstado({ tipo: "enviando" });
+      try {
+        await api.ingerirTicketImagen(archivo, supermercado || undefined);
+        setEstado({ tipo: "ok", mensaje: "Foto del ticket procesada" });
+      } catch (err) {
+        setEstado({
+          tipo: "error",
+          mensaje:
+            err instanceof ErrorApi
+              ? `Error ${err.status}: ${err.message}`
+              : "No se pudo subir la foto",
+        });
+      }
+    },
+    [supermercado],
+  );
 
   if (!abierta) return null;
 
@@ -127,6 +147,24 @@ export function BarraComandos() {
             }}
           />
         </div>
+
+        <div className="mt-3 flex items-center gap-2">
+          <Store className="size-4 text-slate-500" />
+          <select
+            value={supermercado}
+            onChange={(ev) => setSupermercado(ev.target.value)}
+            aria-label="Supermercado del ticket"
+            className="input-premium max-w-[14rem] text-sm"
+          >
+            <option value={SUPER_AUTO}>Detectar automáticamente</option>
+            {supermercados.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.nombre}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="mt-3 flex items-center justify-between gap-2">
           <p className="text-xs text-slate-500">
             Ctrl+K para abrir/cerrar · Enter para enviar · Esc para salir
@@ -137,7 +175,11 @@ export function BarraComandos() {
             disabled={estado.tipo === "enviando" || !texto.trim()}
             className="boton-primario"
           >
-            {estado.tipo === "enviando" ? "Enviando…" : <Send className="size-4" />}
+            {estado.tipo === "enviando" ? (
+              "Enviando…"
+            ) : (
+              <Send className="size-4" />
+            )}
           </button>
         </div>
         {estado.tipo === "ok" && (

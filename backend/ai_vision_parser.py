@@ -25,9 +25,9 @@ from typing import Optional, Protocol, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
+from backend.categorias import CategoriaManager
 from backend.config import Settings
 from backend.models import (
-    CategoriaItem,
     Consumible,
     Ubicacion,
     Unidad,
@@ -37,7 +37,6 @@ from backend.vault_manager import VaultManager, ahora_utc
 logger = logging.getLogger(__name__)
 
 # Catálogos válidos derivados de los Literals de los modelos de Fase 1
-CATEGORIAS_VALIDAS: frozenset[str] = frozenset(get_args(CategoriaItem))
 UBICACIONES_VALIDAS: frozenset[str] = frozenset(get_args(Ubicacion))
 UNIDADES_VALIDAS: frozenset[str] = frozenset(get_args(Unidad))
 
@@ -91,6 +90,7 @@ class TicketGasto(BaseModel):
     fecha: date
     total: float = Field(ge=0.0)
     items_registrados: list[str] = Field(default_factory=list)
+    supermercado: str = "Desconocido"
 
 
 class GastoMes(BaseModel):
@@ -371,9 +371,12 @@ class ReceiptParser:
             )
         else:
             inventario = "(inventario vacío)"
+        categorias = [
+            c.id for c in self.vault.categoria_manager.listar()
+        ] or ["despensa_seca"]
         return _PROMPT_TICKET.format(
             unidades=", ".join(sorted(UNIDADES_VALIDAS)),
-            categorias=", ".join(sorted(CATEGORIAS_VALIDAS)),
+            categorias=", ".join(sorted(categorias)),
             ubicaciones=", ".join(sorted(UBICACIONES_VALIDAS)),
             inventario=inventario,
             fuente=fuente,
@@ -569,7 +572,10 @@ def _cuerpo_gasto(gasto: GastoMes) -> str:
 
 
 async def _registrar_gasto(
-    vault: VaultManager, ticket: TicketParseado, items_registrados: list[str]
+    vault: VaultManager,
+    ticket: TicketParseado,
+    items_registrados: list[str],
+    supermercado: Optional[str] = None,
 ) -> GastoMes:
     """Acumula el ticket en gastos/YYYY-MM.md (crea el archivo si falta)."""
     mes = ticket.fecha.strftime("%Y-%m")
@@ -586,11 +592,21 @@ async def _registrar_gasto(
                 fecha=ticket.fecha,
                 total=ticket.total_ticket,
                 items_registrados=items_registrados,
+                supermercado=supermercado or ticket.comercio or "Desconocido",
             )
         )
         gasto.total_mes = round(sum(t.total for t in gasto.tickets), 2)
         await vault._write_doc(ruta, gasto, _cuerpo_gasto(gasto))
     return gasto
+
+
+def _normalizar_categoria(
+    categoria: str, manager: CategoriaManager
+) -> str:
+    """Devuelve la categoría si existe en el manager; si no, ``despensa_seca``."""
+    if manager.existe(categoria):
+        return categoria
+    return "despensa_seca"
 
 
 async def _crear_item_desde_ticket(
@@ -612,10 +628,8 @@ async def _crear_item_desde_ticket(
         if item_ticket.ubicacion_sugerida in UBICACIONES_VALIDAS
         else "despensa"
     )
-    categoria = (
-        item_ticket.categoria_sugerida
-        if item_ticket.categoria_sugerida in CATEGORIAS_VALIDAS
-        else "despensa_seca"
+    categoria = _normalizar_categoria(
+        item_ticket.categoria_sugerida, vault.categoria_manager
     )
     unidad = (
         item_ticket.unidad
@@ -646,7 +660,9 @@ async def _crear_item_desde_ticket(
 
 
 async def register_purchase(
-    vault: VaultManager, ticket: TicketParseado
+    vault: VaultManager,
+    ticket: TicketParseado,
+    supermercado: Optional[str] = None,
 ) -> ResultadoRegistroCompra:
     """Registra un ticket parseado con efecto en cascada sobre el vault.
 
@@ -655,7 +671,14 @@ async def register_purchase(
     pendiente); si no existe, se crea su .md en inventario/<ubicacion>/ y
     después se añade el lote. Al final, el gasto se acumula en
     gastos/YYYY-MM.md.
+
+    Args:
+        vault: Gestor del vault Markdown.
+        ticket: Ticket parseado por el LLM.
+        supermercado: Nombre del supermercado donde se realizó la compra.
+            Si no se indica, se usa ``ticket.comercio``.
     """
+    supermercado_final = supermercado or ticket.comercio or "Desconocido"
     resultados: list[ResultadoItemRegistrado] = []
     for item_ticket in ticket.items:
         existente: Optional[Consumible] = None
@@ -673,6 +696,7 @@ async def register_purchase(
             item_ticket.cantidad,
             item_ticket.precio_unitario,
             item_ticket.fecha_caducidad_estimada,
+            supermercado=supermercado_final,
         )
         resultados.append(
             ResultadoItemRegistrado(
@@ -685,7 +709,7 @@ async def register_purchase(
             )
         )
     gasto = await _registrar_gasto(
-        vault, ticket, [r.item_id for r in resultados]
+        vault, ticket, [r.item_id for r in resultados], supermercado_final
     )
     return ResultadoRegistroCompra(
         ticket=ticket,

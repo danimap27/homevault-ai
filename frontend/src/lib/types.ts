@@ -5,13 +5,18 @@
 
 // --- Catálogos (Literals del backend) ----------------------------------------
 
-export type CategoriaItem =
-  | "lacteos"
-  | "congelados"
-  | "despensa_seca"
-  | "limpieza"
-  | "recambios_hogar"
-  | "botiquin";
+/** Identificador de categoría dinámica. Antes era un Literal cerrado; ahora el
+ *  backend permite crear categorías arbitrarias vía `/api/categories`. */
+export type CategoriaItem = string;
+
+export interface Categoria {
+  id: string;
+  nombre: string;
+  color: string;
+  icono: string;
+  ubicacion_default: string | null;
+  orden: number;
+}
 
 export type Ubicacion = "nevera" | "congelador" | "despensa" | "bano" | "trastero";
 
@@ -62,6 +67,7 @@ export interface Lote {
   cantidad: number;
   fecha_caducidad: string | null;
   fecha_adquisicion: string | null;
+  supermercado: string | null;
 }
 
 export interface Consumible {
@@ -112,6 +118,7 @@ export interface ResultadoCompra {
   cantidad: number;
   stock_actual: number;
   tachado_de_lista_compra: boolean;
+  supermercado: string | null;
 }
 
 // --- Recetas y planificador ----------------------------------------------------
@@ -131,7 +138,95 @@ export interface Receta {
   raciones: number;
   calorias_racion: number | null;
   ingredientes: Ingrediente[];
+  instrucciones: string | null;
   tags: string[];
+}
+
+export interface IngredienteFaltante {
+  nombre: string;
+  cantidad_necesaria: number;
+  cantidad_disponible: number;
+  unidad: string;
+}
+
+export interface RecetaPosible {
+  receta: Receta;
+  score: number;
+  posible_completa: boolean;
+  faltantes: IngredienteFaltante[];
+}
+
+export interface CrearRecetaInput {
+  id?: string;
+  titulo: string;
+  categoria: CategoriaReceta;
+  tiempo_minutos?: number;
+  raciones?: number;
+  calorias_racion?: number | null;
+  ingredientes?: Ingrediente[];
+  instrucciones?: string | null;
+  tags?: string[];
+}
+
+export interface ActualizarRecetaInput {
+  titulo?: string;
+  categoria?: CategoriaReceta;
+  tiempo_minutos?: number;
+  raciones?: number;
+  calorias_racion?: number | null;
+  ingredientes?: Ingrediente[];
+  instrucciones?: string | null;
+  tags?: string[];
+}
+
+export interface CrearConsumibleInput {
+  id?: string;
+  nombre: string;
+  categoria: CategoriaItem;
+  ubicacion: Ubicacion;
+  stock_minimo?: number;
+  unidad: Unidad;
+  precio_unitario_estimado?: number | null;
+  ean_barcode?: string | null;
+  auto_lista_compra?: boolean;
+  tags?: string[];
+}
+
+export interface ActualizarConsumibleInput {
+  nombre?: string;
+  categoria?: CategoriaItem;
+  ubicacion?: Ubicacion;
+  stock_minimo?: number;
+  unidad?: Unidad;
+  precio_unitario_estimado?: number | null;
+  ean_barcode?: string | null;
+  auto_lista_compra?: boolean;
+  tags?: string[];
+}
+
+export interface MoverItemInput {
+  categoria?: CategoriaItem;
+  ubicacion?: Ubicacion;
+}
+
+export interface CocinarRecetaInput {
+  raciones?: number;
+}
+
+export interface CocinarRecetaResultado {
+  receta_id: string;
+  raciones: number;
+  consumidos: { item_id: string | null; nombre: string; cantidad: number; unidad: string }[];
+  faltantes: IngredienteFaltante[];
+  anadidos_a_lista_compra: { item_id: string | null; nombre: string; cantidad: number; unidad: string }[];
+}
+
+export interface AsignarPlanInput {
+  semana_iso: string;
+  dia: string;
+  toma: string;
+  receta_id: string;
+  raciones: number;
 }
 
 export interface ComidaPlanificada {
@@ -290,4 +385,35 @@ export interface ResultadoImpresion {
 export interface RespuestaCheckLista {
   item_id: string;
   tachadas: number;
+}
+
+/** Supermercado (backend/supermercados.py). */
+export interface Supermercado {
+  id: string;
+  nombre: string;
+  predeterminado: boolean;
+}
+
+/** Código de barras local (backend/local_barcodes.py). */
+export interface LocalBarcode {
+  ean: string;
+  nombre: string;
+  categoria: CategoriaItem;
+  ubicacion: Ubicacion;
+  unidad: Unidad;
+  supermercado: string | null;
+  precio_unitario_estimado: number | null;
+  tags: string[];
+}
+
+/** Respuesta de DELETE /api/shopping-list/{item_id}. */
+export interface RespuestaBorrarLista {
+  item_id: string;
+  eliminadas: number;
+}
+
+/** Respuesta de PUT /api/shopping-list/{item_id}. */
+export interface RespuestaEditarLista {
+  item_id: string;
+  editadas: number;
 }

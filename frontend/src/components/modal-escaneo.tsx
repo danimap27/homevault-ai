@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  CalendarDays,
   Camera,
   Check,
   Loader2,
   Package,
   Plus,
   ShoppingCart,
+  Store,
   Tag,
   Trash2,
   X,
@@ -17,7 +19,7 @@ import type {
   RespuestaBarcode,
   RespuestaBarcodeNoEncontrado,
 } from "@/lib/api";
-import type { CategoriaItem, Ubicacion, Unidad } from "@/lib/types";
+import type { Categoria, CategoriaItem, Supermercado, Ubicacion, Unidad } from "@/lib/types";
 
 type ResultadoEscaneo = RespuestaBarcode | RespuestaBarcodeNoEncontrado;
 
@@ -27,15 +29,6 @@ interface ModalEscaneoProps {
   alCerrar: () => void;
   alExito: (mensaje: string) => void;
 }
-
-const CATEGORIAS: { valor: CategoriaItem; etiqueta: string }[] = [
-  { valor: "lacteos", etiqueta: "Lácteos" },
-  { valor: "congelados", etiqueta: "Congelados" },
-  { valor: "despensa_seca", etiqueta: "Despensa seca" },
-  { valor: "limpieza", etiqueta: "Limpieza" },
-  { valor: "recambios_hogar", etiqueta: "Recambios del hogar" },
-  { valor: "botiquin", etiqueta: "Botiquín" },
-];
 
 const UBICACIONES: { valor: Ubicacion; etiqueta: string }[] = [
   { valor: "nevera", etiqueta: "Nevera" },
@@ -71,6 +64,15 @@ export function ModalEscaneo({
     texto: string;
     tipo: "exito" | "error";
   } | null>(null);
+  const [supermercados, setSupermercados] = useState<Supermercado[]>([]);
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
+
+  // Formulario de compra rápida para producto encontrado
+  const [modoCompra, setModoCompra] = useState(false);
+  const [cantidadCompra, setCantidadCompra] = useState(1);
+  const [precioCompra, setPrecioCompra] = useState(0);
+  const [caducidadCompra, setCaducidadCompra] = useState("");
+  const [supermercadoCompra, setSupermercadoCompra] = useState("");
 
   // Formulario de producto no encontrado
   const [nombre, setNombre] = useState("");
@@ -78,12 +80,36 @@ export function ModalEscaneo({
   const [ubicacion, setUbicacion] = useState<Ubicacion>("despensa");
   const [unidad, setUnidad] = useState<Unidad>("unidades");
   const [precio, setPrecio] = useState("");
+  const [supermercadoRegistro, setSupermercadoRegistro] = useState("");
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [fotoProducto, setFotoProducto] = useState<File | null>(null);
   const [fotoPrecio, setFotoPrecio] = useState<File | null>(null);
 
   const inputProductoRef = useRef<HTMLInputElement>(null);
   const inputPrecioRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    Promise.all([api.getSupermercados(), api.getCategorias()]).then(
+      ([supers, cats]) => {
+        setSupermercados(supers);
+        setCategorias(cats.sort((a, b) => a.orden - b.orden));
+        const pred = supers.find((s) => s.predeterminado);
+        if (pred) {
+          setSupermercadoCompra(pred.id);
+          setSupermercadoRegistro(pred.id);
+        }
+        if (cats.length > 0 && !categoria) {
+          setCategoria(cats[0].id);
+        }
+      },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (resultado && esEncontrado(resultado)) {
+      setPrecioCompra(resultado.item.precio_unitario_estimado ?? 0);
+    }
+  }, [resultado]);
 
   const mostrarExito = useCallback(
     (texto: string) => {
@@ -119,20 +145,29 @@ export function ModalEscaneo({
     }
   };
 
-  const comprar = async (item: { id: string; nombre: string; precio_unitario_estimado: number | null }) => {
+  const comprar = async (item: { id: string; nombre: string }) => {
+    if (cantidadCompra <= 0) {
+      setMensaje({ texto: "La cantidad debe ser mayor que 0", tipo: "error" });
+      return;
+    }
     setCargando(true);
     setMensaje(null);
     try {
       const res = await api.registrarCompra(
         item.id,
-        1,
-        item.precio_unitario_estimado ?? 0,
+        cantidadCompra,
+        precioCompra,
+        caducidadCompra || undefined,
+        supermercadoCompra || undefined,
       );
-      const partes = [`Compra registrada: +1 ${item.nombre}`];
+      const partes = [
+        `Compra registrada: +${cantidadCompra} ${item.nombre}`,
+      ];
       if (res.tachado_de_lista_compra) {
         partes.push("tachado de la lista de la compra");
       }
       mostrarExito(partes.join(" · "));
+      setModoCompra(false);
     } catch (err) {
       mostrarError(err);
     } finally {
@@ -179,6 +214,7 @@ export function ModalEscaneo({
       formData.append("ubicacion", ubicacion);
       formData.append("unidad", unidad);
       if (precio) formData.append("precio", precio);
+      if (supermercadoRegistro) formData.append("supermercado", supermercadoRegistro);
       if (mergeTargetId) formData.append("merge_target_id", mergeTargetId);
       if (fotoProducto) formData.append("foto_producto", fotoProducto);
       if (fotoPrecio) formData.append("foto_precio", fotoPrecio);
@@ -260,47 +296,136 @@ export function ModalEscaneo({
                   Stock: {resultado.item.stock_actual} {resultado.item.unidad}
                 </p>
                 <p className="text-xs capitalize text-slate-500">
-                  {resultado.item.categoria.replace(/_/g, " ")} ·{" "}
+                  {categorias.find((c) => c.id === resultado.item.categoria)?.nombre ??
+                    resultado.item.categoria.replace(/_/g, " ")} ·{" "}
                   {resultado.item.ubicacion}
                 </p>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-2">
-              <button
-                type="button"
-                onClick={() => consumir(resultado.item.id, resultado.item.nombre)}
-                disabled={cargando}
-                className="boton-primario justify-between"
-              >
-                <span className="flex items-center gap-2">
-                  <Trash2 className="size-4" /> Consumir 1
-                </span>
-                {cargando && <Loader2 className="size-4 animate-spin" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => comprar(resultado.item)}
-                disabled={cargando}
-                className="boton-secundario justify-between"
-              >
-                <span className="flex items-center gap-2">
-                  <Plus className="size-4" /> + Compra
-                </span>
-                {cargando && <Loader2 className="size-4 animate-spin" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => quitarDeLista(resultado.item.id, resultado.item.nombre)}
-                disabled={cargando}
-                className="boton-secundario justify-between border-violet-500/30 text-violet-200 hover:border-violet-500/50 hover:bg-violet-950/30"
-              >
-                <span className="flex items-center gap-2">
-                  <ShoppingCart className="size-4" /> Quitar de la lista
-                </span>
-                {cargando && <Loader2 className="size-4 animate-spin" />}
-              </button>
-            </div>
+            {!modoCompra ? (
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => consumir(resultado.item.id, resultado.item.nombre)}
+                  disabled={cargando}
+                  className="boton-primario justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Trash2 className="size-4" /> Consumir 1
+                  </span>
+                  {cargando && <Loader2 className="size-4 animate-spin" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModoCompra(true)}
+                  disabled={cargando}
+                  className="boton-secundario justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Plus className="size-4" /> + Compra
+                  </span>
+                  {cargando && <Loader2 className="size-4 animate-spin" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => quitarDeLista(resultado.item.id, resultado.item.nombre)}
+                  disabled={cargando}
+                  className="boton-secundario justify-between border-violet-500/30 text-violet-200 hover:border-violet-500/50 hover:bg-violet-950/30"
+                >
+                  <span className="flex items-center gap-2">
+                    <ShoppingCart className="size-4" /> Quitar de la lista
+                  </span>
+                  {cargando && <Loader2 className="size-4 animate-spin" />}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4 rounded-2xl border border-slate-700/30 bg-slate-800/40 p-4">
+                <h4 className="text-sm font-medium text-slate-200">Detalles de la compra</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                      Cantidad
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      step={resultado.item.unidad === "unidades" ? 1 : 0.01}
+                      value={cantidadCompra}
+                      onChange={(ev) => setCantidadCompra(Number(ev.target.value))}
+                      className="input-premium"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-300">
+                      Precio unitario (€)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={precioCompra}
+                      onChange={(ev) => setPrecioCompra(Number(ev.target.value))}
+                      className="input-premium"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    <CalendarDays className="mr-1 inline size-3" />
+                    Fecha de caducidad
+                  </label>
+                  <input
+                    type="date"
+                    value={caducidadCompra}
+                    onChange={(ev) => setCaducidadCompra(ev.target.value)}
+                    className="input-premium"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-300">
+                    <Store className="mr-1 inline size-3" />
+                    Supermercado
+                  </label>
+                  <select
+                    value={supermercadoCompra}
+                    onChange={(ev) => setSupermercadoCompra(ev.target.value)}
+                    className="input-premium"
+                  >
+                    <option value="">Sin supermercado</option>
+                    {supermercados.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.nombre}
+                        {s.predeterminado ? " ★" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModoCompra(false)}
+                    className="boton-secundario flex-1"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => comprar(resultado.item)}
+                    disabled={cargando}
+                    className="boton-primario flex-1 justify-center"
+                  >
+                    {cargando ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Check className="size-4" /> Guardar
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <form onSubmit={guardarNuevo} className="space-y-4">
@@ -328,9 +453,9 @@ export function ModalEscaneo({
                   onChange={(ev) => setCategoria(ev.target.value as CategoriaItem)}
                   className="input-premium"
                 >
-                  {CATEGORIAS.map((c) => (
-                    <option key={c.valor} value={c.valor}>
-                      {c.etiqueta}
+                  {categorias.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.icono} {c.nombre}
                     </option>
                   ))}
                 </select>
@@ -369,19 +494,40 @@ export function ModalEscaneo({
               </div>
             </div>
 
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-300">
-                Precio estimado (€)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={precio}
-                onChange={(ev) => setPrecio(ev.target.value)}
-                placeholder="0.00"
-                className="input-premium"
-              />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-300">
+                  Precio estimado (€)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={precio}
+                  onChange={(ev) => setPrecio(ev.target.value)}
+                  placeholder="0.00"
+                  className="input-premium"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-300">
+                  <Store className="mr-1 inline size-4" />
+                  Supermercado
+                </label>
+                <select
+                  value={supermercadoRegistro}
+                  onChange={(ev) => setSupermercadoRegistro(ev.target.value)}
+                  className="input-premium"
+                >
+                  <option value="">Sin supermercado</option>
+                  {supermercados.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.nombre}
+                      {s.predeterminado ? " ★" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {resultado.sugerencias.length > 0 && (

@@ -13,15 +13,17 @@ import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, TypeVar
+from typing import Optional, TypeVar, get_args
 
 import frontmatter
 import portalocker
 from pydantic import BaseModel
 
+from backend.categorias import CategoriaManager
 from backend.models import (
     Consumible,
     EntradaListaCompra,
+    Ingrediente,
     ItemCaducidad,
     ItemHuerfano,
     Lote,
@@ -29,6 +31,7 @@ from backend.models import (
     ResultadoCompra,
     ResultadoConsumo,
     Tarea,
+    Ubicacion,
 )
 
 ModeloT = TypeVar("ModeloT", bound=BaseModel)
@@ -61,6 +64,7 @@ class VaultManager:
 
     def __init__(self, vault_path: Path | str) -> None:
         self.vault_path = Path(vault_path)
+        self.categoria_manager = CategoriaManager(self.vault_path)
         self._locks: dict[Path, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
 
@@ -280,6 +284,7 @@ class VaultManager:
         cantidad: float,
         precio_unitario: float,
         fecha_caducidad: Optional[date] = None,
+        supermercado: Optional[str] = None,
     ) -> ResultadoCompra:
         """Registra una compra: nuevo lote, incremento de stock y [x] en lista."""
         path = await self._find_item_path(item_id)
@@ -297,6 +302,7 @@ class VaultManager:
                     cantidad=cantidad,
                     fecha_caducidad=fecha_caducidad,
                     fecha_adquisicion=ahora_utc().date(),
+                    supermercado=supermercado,
                 )
             )
             item.stock_actual = round(item.stock_actual + cantidad, 6)
@@ -314,6 +320,7 @@ class VaultManager:
             cantidad=cantidad,
             stock_actual=item.stock_actual,
             tachado_de_lista_compra=tachado,
+            supermercado=supermercado,
         )
 
     # --- Lista de la compra (listas/compra.md) ----------------------------------
@@ -358,12 +365,15 @@ class VaultManager:
             cantidad_sugerida = round(
                 max(item.stock_minimo - item.stock_actual + 1.0, 1.0), 2
             )
-            linea = (
-                f"- [ ] {item.nombre} <!-- item_id:{item.id};"
-                f" cantidad:{cantidad_sugerida}; unidad:{item.unidad};"
-                f" categoria:{item.categoria} -->\n"
+            lineas.append(
+                self._formato_linea_compra(
+                    item.nombre,
+                    item.id,
+                    cantidad_sugerida,
+                    item.unidad,
+                    item.categoria,
+                )
             )
-            lineas.append(linea)
             await self._write_text(self._path_lista_compra, "".join(lineas))
             return True
 
@@ -453,37 +463,136 @@ class VaultManager:
                 )
                 if mismo_id or mismo_nombre:
                     return False
-            comentario = ""
-            if item_id:
-                comentario = (
-                    f" <!-- item_id:{item_id};"
-                    f" cantidad:{cantidad if cantidad is not None else ''};"
-                    f" unidad:{unidad or ''};"
-                    f" categoria:{categoria or ''} -->"
+            lineas.append(
+                self._formato_linea_compra(
+                    nombre, item_id or "", cantidad, unidad, categoria
                 )
-            lineas.append(f"- [ ] {nombre}{comentario}\n")
+            )
             await self._write_text(self._path_lista_compra, "".join(lineas))
             return True
 
-    async def remove_shopping_list_entry(self, nombre_o_id: str) -> int:
-        """Elimina de la lista las líneas que coincidan (id o nombre).
+    async def remove_shopping_list_entry(self, item_id: str) -> int:
+        """Elimina las líneas que coincidan con ``item_id``.
+
+        Eliminan tanto líneas pendientes como tachadas. Si ninguna línea
+        tiene ese ``item_id``, se intenta una coincidencia por nombre exacto
+        (case-insensitive) para mantener compatibilidad con líneas añadidas
+        manualmente sin metadata.
 
         Devuelve el número de líneas eliminadas.
         """
         lock = await self._get_lock(self._path_lista_compra)
         async with lock:
             lineas = await self._leer_lineas_compra()
-            nuevas: list[str] = []
-            eliminadas = 0
+            # Primera pasada: coincidencia exacta por item_id
+            eliminadas_id = 0
+            candidatas: list[str] = []
             for linea in lineas:
                 match = _REGEX_LINEA_COMPRA.match(linea.rstrip("\n"))
-                if match and self._coincide_linea(match, nombre_o_id):
-                    eliminadas += 1
+                if match and match.group("item_id") == item_id:
+                    eliminadas_id += 1
+                    continue
+                candidatas.append(linea)
+            if eliminadas_id:
+                await self._write_text(
+                    self._path_lista_compra, "".join(candidatas)
+                )
+                return eliminadas_id
+            # Fallback por nombre exacto (líneas sin item_id)
+            nombre_buscado = item_id.strip().casefold()
+            nuevas: list[str] = []
+            eliminadas_nombre = 0
+            for linea in candidatas:
+                match = _REGEX_LINEA_COMPRA.match(linea.rstrip("\n"))
+                if (
+                    match
+                    and match.group("nombre").strip().casefold()
+                    == nombre_buscado
+                ):
+                    eliminadas_nombre += 1
                     continue
                 nuevas.append(linea)
-            if eliminadas:
+            if eliminadas_nombre:
+                await self._write_text(
+                    self._path_lista_compra, "".join(nuevas)
+                )
+            return eliminadas_nombre
+
+    async def update_shopping_list_entry(
+        self,
+        item_id: str,
+        cantidad: Optional[float] = None,
+        unidad: Optional[str] = None,
+        categoria: Optional[str] = None,
+    ) -> int:
+        """Edita las líneas pendientes ([ ]) que coincidan con ``item_id``.
+
+        Si no existe una línea pendiente para ese ``item_id`` no crea nada.
+        Devuelve el número de líneas editadas.
+        """
+        lock = await self._get_lock(self._path_lista_compra)
+        async with lock:
+            lineas = await self._leer_lineas_compra()
+            editadas = 0
+            nuevas: list[str] = []
+            for linea in lineas:
+                match = _REGEX_LINEA_COMPRA.match(linea.rstrip("\n"))
+                if (
+                    match
+                    and match.group("marcado") == " "
+                    and match.group("item_id") == item_id
+                ):
+                    nombre = match.group("nombre").strip()
+                    nueva_cantidad = (
+                        cantidad
+                        if cantidad is not None
+                        else (
+                            float(match.group("cantidad"))
+                            if match.group("cantidad") not in (None, "")
+                            else None
+                        )
+                    )
+                    nueva_unidad = (
+                        unidad if unidad is not None else match.group("unidad")
+                    )
+                    nueva_categoria = (
+                        categoria
+                        if categoria is not None
+                        else match.group("categoria")
+                    )
+                    nuevas.append(
+                        self._formato_linea_compra(
+                            nombre,
+                            item_id,
+                            nueva_cantidad,
+                            nueva_unidad,
+                            nueva_categoria,
+                        )
+                    )
+                    editadas += 1
+                else:
+                    nuevas.append(linea)
+            if editadas:
                 await self._write_text(self._path_lista_compra, "".join(nuevas))
-            return eliminadas
+            return editadas
+
+    @staticmethod
+    def _formato_linea_compra(
+        nombre: str,
+        item_id: str,
+        cantidad: Optional[float],
+        unidad: Optional[str],
+        categoria: Optional[str],
+    ) -> str:
+        """Construye una línea de lista de la compra con su comentario HTML."""
+        if not item_id:
+            return f"- [ ] {nombre}\n"
+        return (
+            f"- [ ] {nombre} <!-- item_id:{item_id};"
+            f" cantidad:{cantidad if cantidad is not None else ''};"
+            f" unidad:{unidad or ''};"
+            f" categoria:{categoria or ''} -->\n"
+        )
 
     async def check_shopping_list_entry(self, nombre_o_id: str) -> int:
         """Tacha ([x]) las líneas pendientes que coincidan (id o nombre).
@@ -572,6 +681,169 @@ class VaultManager:
         resultados.sort(key=lambda r: r.fecha_caducidad)
         return resultados
 
+    # --- CRUD de ítems de inventario --------------------------------------------
+
+    _CAMPOS_ITEM_EDITABLES: frozenset[str] = frozenset(
+        {
+            "nombre",
+            "categoria",
+            "ubicacion",
+            "stock_minimo",
+            "unidad",
+            "precio_unitario_estimado",
+            "dias_promedio_consumo",
+            "auto_lista_compra",
+            "tags",
+            "ean_barcode",
+        }
+    )
+
+    def _ruta_item(self, item: Consumible) -> Path:
+        """Devuelve la ruta canónica de un ítem según su ubicación."""
+        return (
+            self.vault_path
+            / "inventario"
+            / item.ubicacion
+            / f"{item.id}.md"
+        )
+
+    def _validar_categoria(self, categoria: str) -> None:
+        """Lanza ``ValueError`` si la categoría no existe en el manager."""
+        if not self.categoria_manager.existe(categoria):
+            raise ValueError(f"Categoría no válida: {categoria}")
+
+    async def create_item(self, consumible: Consumible) -> Consumible:
+        """Crea un nuevo ítem de inventario en ``inventario/<ubicacion>/<id>.md``.
+
+        Raises:
+            FileExistsError: si ya existe un archivo con el mismo id en la
+                ubicación indicada.
+        """
+        self._validar_categoria(consumible.categoria)
+
+        path = self._ruta_item(consumible)
+        if path.exists():
+            raise FileExistsError(
+                f"Ya existe un ítem en {path.relative_to(self.vault_path)}"
+            )
+
+        cuerpo = f"# {consumible.nombre}\n\n"
+        lock = await self._get_lock(path)
+        async with lock:
+            await self._write_doc(path, consumible, cuerpo)
+        return consumible
+
+    async def update_item(self, item_id: str, cambios: dict) -> Consumible:
+        """Actualiza los campos editables de un ítem preservando el cuerpo.
+
+        No permite modificar ``id`` ni ``stock_actual`` (este último se gestiona
+        a través de ``consume_item``/``add_purchase``). Si ``cambios`` incluye
+        una nueva ``ubicacion``, el archivo se mueve a la subcarpeta
+        correspondiente.
+
+        Raises:
+            KeyError: si el ítem no existe.
+            ValueError: si se intenta cambiar ``id`` o ``stock_actual``.
+        """
+        if "id" in cambios or "stock_actual" in cambios:
+            raise ValueError(
+                "No se permite cambiar 'id' ni 'stock_actual' directamente"
+            )
+
+        campos_invalidos = set(cambios.keys()) - self._CAMPOS_ITEM_EDITABLES
+        if campos_invalidos:
+            raise ValueError(
+                f"Campos no editables en ítem: {sorted(campos_invalidos)}"
+            )
+
+        if "categoria" in cambios:
+            self._validar_categoria(cambios["categoria"])
+
+        path = await self._find_item_path(item_id)
+        if path is None:
+            raise KeyError(f"Ítem no encontrado: {item_id}")
+
+        lock = await self._get_lock(path)
+        async with lock:
+            item, cuerpo = await self._read_doc(path, Consumible)
+            nueva_ubicacion = cambios.get("ubicacion", item.ubicacion)
+            if nueva_ubicacion not in get_args(Ubicacion):
+                raise ValueError(f"Ubicación no válida: {nueva_ubicacion}")
+
+            for campo, valor in cambios.items():
+                setattr(item, campo, valor)
+
+            item.ultima_actualizacion = ahora_utc()
+            destino = self._ruta_item(item)
+            if destino != path:
+                if destino.exists():
+                    raise FileExistsError(
+                        f"Ya existe un ítem en {destino.relative_to(self.vault_path)}"
+                    )
+                await self._write_doc(destino, item, cuerpo)
+                await asyncio.to_thread(path.unlink)
+            else:
+                await self._write_doc(path, item, cuerpo)
+        return item
+
+    async def delete_item(self, item_id: str) -> bool:
+        """Elimina el archivo ``.md`` de un ítem. Devuelve True si existía."""
+        path = await self._find_item_path(item_id)
+        if path is None:
+            return False
+
+        lock = await self._get_lock(path)
+        async with lock:
+            path = await self._find_item_path(item_id)
+            if path is None:
+                return False
+            await asyncio.to_thread(path.unlink)
+        return True
+
+    async def move_item(
+        self,
+        item_id: str,
+        nueva_categoria: str | None = None,
+        nueva_ubicacion: Ubicacion | None = None,
+    ) -> Consumible:
+        """Mueve un ítem de ubicación (y opcionalmente de categoría).
+
+        Si cambia la ubicación, el archivo se traslada a la nueva subcarpeta
+        bajo ``inventario/``. La categoría se valida contra el catálogo
+        dinámico antes de aplicarla.
+
+        Raises:
+            KeyError: si el ítem no existe.
+            ValueError: si la nueva categoría no existe.
+        """
+        if nueva_categoria is not None:
+            self._validar_categoria(nueva_categoria)
+
+        path = await self._find_item_path(item_id)
+        if path is None:
+            raise KeyError(f"Ítem no encontrado: {item_id}")
+
+        lock = await self._get_lock(path)
+        async with lock:
+            item, cuerpo = await self._read_doc(path, Consumible)
+            if nueva_categoria is not None:
+                item.categoria = nueva_categoria
+            if nueva_ubicacion is not None:
+                item.ubicacion = nueva_ubicacion
+
+            item.ultima_actualizacion = ahora_utc()
+            destino = self._ruta_item(item)
+            if destino != path:
+                if destino.exists():
+                    raise FileExistsError(
+                        f"Ya existe un ítem en {destino.relative_to(self.vault_path)}"
+                    )
+                await self._write_doc(destino, item, cuerpo)
+                await asyncio.to_thread(path.unlink)
+            else:
+                await self._write_doc(path, item, cuerpo)
+        return item
+
     # --- Recetas (recetas/*.md) -------------------------------------------------
 
     def _archivos_recetas(self) -> list[Path]:
@@ -588,6 +860,106 @@ class VaultManager:
             receta, _ = await self._read_doc(path, Receta)
             recetas.append(receta)
         return recetas
+
+    async def _find_recipe_path(self, receta_id: str) -> Optional[Path]:
+        """Localiza la ruta del archivo de una receta por su id."""
+        for path in self._archivos_recetas():
+            receta, _ = await self._read_doc(path, Receta)
+            if receta.id == receta_id:
+                return path
+        return None
+
+    async def get_receta(self, receta_id: str) -> Optional[Receta]:
+        """Busca una receta por id."""
+        path = await self._find_recipe_path(receta_id)
+        if path is None:
+            return None
+        receta, _ = await self._read_doc(path, Receta)
+        return receta
+
+    _CAMPOS_RECETA_EDITABLES: frozenset[str] = frozenset(
+        {
+            "titulo",
+            "categoria",
+            "tiempo_minutos",
+            "raciones",
+            "calorias_racion",
+            "ingredientes",
+            "tags",
+        }
+    )
+
+    async def create_receta(self, receta: Receta) -> Receta:
+        """Crea una nueva receta en ``recetas/<id>.md``.
+
+        Raises:
+            FileExistsError: si ya existe una receta con el mismo id.
+        """
+        path = self.vault_path / "recetas" / f"{receta.id}.md"
+        if path.exists():
+            raise FileExistsError(
+                f"Ya existe una receta en {path.relative_to(self.vault_path)}"
+            )
+
+        cuerpo = f"# {receta.titulo}\n\n## Ingredientes\n\n## Elaboración\n\n1.\n"
+        lock = await self._get_lock(path)
+        async with lock:
+            await self._write_doc(path, receta, cuerpo)
+        return receta
+
+    async def update_receta(self, receta_id: str, cambios: dict) -> Receta:
+        """Actualiza los campos editables de una receta preservando el cuerpo.
+
+        No permite modificar ``id``.
+
+        Raises:
+            KeyError: si la receta no existe.
+            ValueError: si se intenta cambiar ``id`` o hay campos desconocidos.
+        """
+        if "id" in cambios:
+            raise ValueError("No se permite cambiar el 'id' de una receta")
+
+        campos_invalidos = set(cambios.keys()) - self._CAMPOS_RECETA_EDITABLES
+        if campos_invalidos:
+            raise ValueError(
+                f"Campos no editables en receta: {sorted(campos_invalidos)}"
+            )
+
+        path = await self._find_recipe_path(receta_id)
+        if path is None:
+            raise KeyError(f"Receta no encontrada: {receta_id}")
+
+        lock = await self._get_lock(path)
+        async with lock:
+            receta, cuerpo = await self._read_doc(path, Receta)
+            for campo, valor in cambios.items():
+                if campo == "ingredientes":
+                    receta.ingredientes = [
+                        (
+                            Ingrediente.model_validate(ing)
+                            if isinstance(ing, dict)
+                            else ing
+                        )
+                        for ing in valor
+                    ]
+                else:
+                    setattr(receta, campo, valor)
+            await self._write_doc(path, receta, cuerpo)
+        return receta
+
+    async def delete_receta(self, receta_id: str) -> bool:
+        """Elimina el archivo ``.md`` de una receta. Devuelve True si existía."""
+        path = await self._find_recipe_path(receta_id)
+        if path is None:
+            return False
+
+        lock = await self._get_lock(path)
+        async with lock:
+            path = await self._find_recipe_path(receta_id)
+            if path is None:
+                return False
+            await asyncio.to_thread(path.unlink)
+        return True
 
     # --- Tareas domésticas (tareas/*.md) ----------------------------------------
 

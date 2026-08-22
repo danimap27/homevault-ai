@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Barcode,
+  BookOpen,
   CalendarDays,
   CheckSquare,
+  FolderOpen,
   Home,
   Refrigerator,
   ShoppingCart,
@@ -13,9 +16,12 @@ import {
 const ENLACES = [
   { href: "/", etiqueta: "Inicio", icono: Home },
   { href: "/inventario", etiqueta: "Inventario", icono: Refrigerator },
+  { href: "/categorias", etiqueta: "Categorías", icono: FolderOpen },
+  { href: "/recetas", etiqueta: "Recetas", icono: BookOpen },
   { href: "/planificador", etiqueta: "Menú", icono: CalendarDays },
   { href: "/tareas", etiqueta: "Tareas", icono: CheckSquare },
   { href: "/lista-compra", etiqueta: "Compra", icono: ShoppingCart },
+  { href: "/barcodes", etiqueta: "Barcodes", icono: Barcode },
 ] as const;
 
 export function BarraNavegacion() {

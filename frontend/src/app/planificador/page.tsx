@@ -12,9 +12,10 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { ChefHat, Package } from "lucide-react";
+import { ChefHat, Loader2, Package } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 import type {
+  CocinarRecetaResultado,
   ComidaPlanificada,
   PlanSemanal,
   Receta,
@@ -49,6 +50,9 @@ export default function PlanificadorPage() {
   const [recetaArrastrada, setRecetaArrastrada] = useState<Receta | null>(null);
   const [rescue, setRescue] = useState<SugerenciaRescate[] | null>(null);
   const [batchAbierto, setBatchAbierto] = useState(false);
+  const [slotPendiente, setSlotPendiente] = useState<SlotId | null>(null);
+  const [recetaPendiente, setRecetaPendiente] = useState<Receta | null>(null);
+  const [resultadoAsignar, setResultadoAsignar] = useState<CocinarRecetaResultado | null>(null);
 
   const sensores = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -96,13 +100,23 @@ export default function PlanificadorPage() {
   const alSoltar = (ev: DragEndEvent) => {
     setRecetaArrastrada(null);
     if (!ev.over || !plan) return;
-    const [dia, toma] = String(ev.over.id).split(":") as [
-      (typeof DIAS)[number],
-      (typeof TOMAS)[number],
-    ];
+    const slot = String(ev.over.id) as SlotId;
     const receta = (recetas ?? []).find((r) => r.id === ev.active.id);
     if (!receta) return;
-    setPlan({
+    setSlotPendiente(slot);
+    setRecetaPendiente(receta);
+    setAviso(null);
+  };
+
+  const asignarSlotLocal = (
+    slot: SlotId,
+    receta: Receta,
+    raciones: number,
+    volcarFaltantes = false,
+  ) => {
+    if (!plan) return;
+    const [dia, toma] = slot.split(":") as [(typeof DIAS)[number], (typeof TOMAS)[number]];
+    const nuevoPlan: PlanSemanal = {
       ...plan,
       dias: {
         ...plan.dias,
@@ -111,13 +125,25 @@ export default function PlanificadorPage() {
           [toma]: {
             receta_id: receta.id,
             plato_libre: null,
-            raciones: receta.raciones,
-            stock_deducido: false,
+            raciones,
+            stock_deducido: volcarFaltantes,
           } satisfies ComidaPlanificada,
         },
       },
-    });
-    setAviso(null);
+    };
+    setPlan(nuevoPlan);
+    return nuevoPlan;
+  };
+
+  const abrirAsignarSlot = (slot: SlotId) => {
+    if (!plan) return;
+    const [dia, toma] = slot.split(":");
+    const recetaId = plan.dias[dia]?.[toma as (typeof TOMAS)[number]]?.receta_id;
+    const receta = (recetas ?? []).find((r) => r.id === recetaId);
+    if (receta) {
+      setSlotPendiente(slot);
+      setRecetaPendiente(receta);
+    }
   };
 
   const limpiarSlot = (slot: SlotId) => {
@@ -254,6 +280,7 @@ export default function PlanificadorPage() {
                         comida={comida}
                         tituloReceta={tituloReceta(comida?.receta_id)}
                         alLimpiar={() => limpiarSlot(slot)}
+                        alEditar={() => abrirAsignarSlot(slot)}
                       />
                     );
                   })}
@@ -327,6 +354,47 @@ export default function PlanificadorPage() {
           }}
         />
       )}
+
+      {recetaPendiente && slotPendiente && plan && (
+        <ModalAsignar
+          receta={recetaPendiente}
+          slot={slotPendiente}
+          semana={plan.semana_iso}
+          onCerrar={() => {
+            setRecetaPendiente(null);
+            setSlotPendiente(null);
+          }}
+          onExito={(mensaje, resultado) => {
+            setAviso(mensaje);
+            if (resultado) setResultadoAsignar(resultado);
+          }}
+          onAsignarLocal={(slot, receta, raciones) => {
+            const nuevo = asignarSlotLocal(slot, receta, raciones, false);
+            if (nuevo) {
+              api
+                .guardarPlan(nuevo)
+                .then((guardado) => {
+                  setPlan(guardado);
+                  setAviso(`"${receta.titulo}" asignado sin volcar faltantes`);
+                })
+                .catch((err) =>
+                  setAviso(
+                    err instanceof ErrorApi
+                      ? `No se pudo guardar el plan: ${err.message}`
+                      : "No se pudo guardar el plan",
+                  ),
+                );
+            }
+          }}
+        />
+      )}
+
+      {resultadoAsignar && (
+        <ModalResultadoAsignar
+          resultado={resultadoAsignar}
+          onCerrar={() => setResultadoAsignar(null)}
+        />
+      )}
     </div>
   );
 }
@@ -362,12 +430,14 @@ function SlotDroppable({
   comida,
   tituloReceta,
   alLimpiar,
+  alEditar,
 }: {
   slot: SlotId;
   toma: (typeof TOMAS)[number];
   comida?: ComidaPlanificada;
   tituloReceta: string | null;
   alLimpiar: () => void;
+  alEditar: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: slot });
   const ocupado = Boolean(comida?.receta_id || comida?.plato_libre);
@@ -375,21 +445,28 @@ function SlotDroppable({
   return (
     <div
       ref={setNodeRef}
+      onClick={ocupado ? alEditar : undefined}
       className={`flex min-h-12 items-center justify-between gap-2 rounded-xl border border-dashed px-3 py-2 text-sm transition-colors ${
         isOver
           ? "border-emerald-500 bg-emerald-500/10"
           : "border-slate-700/50 bg-slate-950/30"
-      }`}
+      } ${ocupado ? "cursor-pointer hover:bg-slate-900/40" : ""}`}
     >
       <span className="text-xs uppercase tracking-wide text-slate-500">{toma}</span>
       {ocupado ? (
         <>
           <span className="min-w-0 flex-1 truncate text-right font-medium text-slate-200">
             {tituloReceta ?? comida?.plato_libre}
+            {comida?.raciones && (
+              <span className="ml-1 text-xs text-slate-500">({comida.raciones})</span>
+            )}
           </span>
           <button
             type="button"
-            onClick={alLimpiar}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              alLimpiar();
+            }}
             aria-label={`Quitar ${toma}`}
             className="shrink-0 rounded-lg px-2 py-1 text-xs text-rose-400 hover:bg-rose-950/30"
           >
@@ -501,5 +578,165 @@ function ModalBatchCooking({
         Cocinar y crear tuppers
       </button>
     </Modal>
+  );
+}
+
+function ModalAsignar({
+  receta,
+  slot,
+  semana,
+  onCerrar,
+  onExito,
+  onAsignarLocal,
+}: {
+  receta: Receta;
+  slot: SlotId;
+  semana: string;
+  onCerrar: () => void;
+  onExito: (mensaje: string, resultado?: CocinarRecetaResultado) => void;
+  onAsignarLocal: (slot: SlotId, receta: Receta, raciones: number) => void;
+}) {
+  const [raciones, setRaciones] = useState(receta.raciones);
+  const [volcarFaltantes, setVolcarFaltantes] = useState(true);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dia, toma] = slot.split(":") as [(typeof DIAS)[number], (typeof TOMAS)[number]];
+
+  const enviar = async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      if (volcarFaltantes) {
+        const res = await api.asignarPlan({
+          semana_iso: semana,
+          dia,
+          toma,
+          receta_id: receta.id,
+          raciones,
+        });
+        const faltan = res.anadidos_a_lista_compra.length;
+        const partes = [
+          `"${receta.titulo}" asignado a ${dia} ${toma}`,
+        ];
+        if (faltan > 0)
+          partes.push(`${faltan} faltante${faltan === 1 ? "" : "s"} añadido${faltan === 1 ? "" : "s"} a la compra`);
+        onExito(partes.join(" · "), res);
+      } else {
+        onAsignarLocal(slot, receta, raciones);
+      }
+      onCerrar();
+    } catch (err) {
+      setError(err instanceof ErrorApi ? err.message : "No se pudo asignar la receta");
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      onClick={onCerrar}
+    >
+      <div
+        className="w-full max-w-sm rounded-3xl border border-slate-700/30 bg-slate-900/90 p-6 shadow-2xl"
+        onClick={(ev) => ev.stopPropagation()}
+      >
+        <h3 className="mb-2 text-lg font-semibold text-slate-100">Asignar receta</h3>
+        <p className="mb-1 text-sm text-slate-400">
+          <strong>{receta.titulo}</strong>
+        </p>
+        <p className="mb-4 text-xs text-slate-500">
+          {dia} · {toma} · {semana}
+        </p>
+
+        <div className="mb-4 space-y-3">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-300">
+              Raciones
+            </label>
+            <input
+              type="number"
+              min="1"
+              value={raciones}
+              onChange={(ev) => setRaciones(Number(ev.target.value))}
+              className="input-premium"
+            />
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={volcarFaltantes}
+              onChange={(ev) => setVolcarFaltantes(ev.target.checked)}
+              className="size-5 accent-emerald-600"
+            />
+            Volver faltantes a la lista de la compra
+          </label>
+        </div>
+
+        {error && (
+          <p className="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-2 text-sm text-rose-200">
+            {error}
+          </p>
+        )}
+
+        <div className="flex gap-2">
+          <button type="button" onClick={onCerrar} className="boton-secundario flex-1">
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={enviar}
+            disabled={cargando}
+            className="boton-primario flex-1 justify-center"
+          >
+            {cargando ? <Loader2 className="size-4 animate-spin" /> : <>Asignar</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalResultadoAsignar({
+  resultado,
+  onCerrar,
+}: {
+  resultado: CocinarRecetaResultado;
+  onCerrar: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      onClick={onCerrar}
+    >
+      <div
+        className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-3xl border border-slate-700/30 bg-slate-900/90 p-6 shadow-2xl"
+        onClick={(ev) => ev.stopPropagation()}
+      >
+        <h3 className="mb-4 text-lg font-semibold text-slate-100">
+          Faltantes añadidos a la compra
+        </h3>
+
+        {resultado.anadidos_a_lista_compra.length === 0 ? (
+          <p className="mb-4 text-sm text-slate-400">No ha sido necesario añadir nada.</p>
+        ) : (
+          <ul className="mb-4 space-y-1 text-sm text-slate-300">
+            {resultado.anadidos_a_lista_compra.map((a, i) => (
+              <li key={i}>
+                {a.nombre}: {a.cantidad} {a.unidad}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <button type="button" onClick={onCerrar} className="boton-primario w-full">
+          Cerrar
+        </button>
+      </div>
+    </div>
   );
 }

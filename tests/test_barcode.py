@@ -15,6 +15,7 @@ from backend.ai_vision_parser import (
     ReceiptParser,
     extraer_precio_desde_imagen,
 )
+from backend.local_barcodes import LocalBarcodeManager
 from backend.models import Consumible
 from backend.off_client import (
     OFFClient,
@@ -255,6 +256,25 @@ def test_get_barcode_crea_item_desde_off(vault: VaultManager) -> None:
     assert fake_off.llamadas == [EAN_NUEVO]
 
 
+def test_get_barcode_crea_item_desde_local(
+    vault: VaultManager,
+) -> None:
+    """EAN en base local: crea el ítem sin llamar a OFF."""
+    manager = LocalBarcodeManager(vault.vault_path)
+    barcode = manager.listar()[0]
+    cliente = TestClient(_app_test(vault, FakeOFFClient()))
+
+    respuesta = cliente.get(f"/api/barcode/{barcode.ean}")
+
+    assert respuesta.status_code == 200
+    datos = respuesta.json()
+    assert datos["origen"] == "local"
+    assert datos["creado"] is True
+    assert datos["item"]["ean_barcode"] == barcode.ean
+    assert datos["item"]["nombre"] == barcode.nombre
+    assert datos["item"]["ubicacion"] == barcode.ubicacion
+
+
 def test_get_barcode_no_encontrado_devuelve_sugerencias(
     vault_poblado: VaultManager,
 ) -> None:
@@ -417,6 +437,31 @@ def test_registro_manual_crea_item_con_foto(vault: VaultManager) -> None:
 
     ruta_foto = vault.vault_path / "assets" / "productos" / f"{item['id']}.jpg"
     assert ruta_foto.exists()
+
+
+def test_registro_manual_guarda_supermercado(vault: VaultManager) -> None:
+    """El registro manual puede almacenar el supermercado en el lote."""
+    cliente = TestClient(_app_test(vault, FakeOFFClient()))
+    ean = "8410000000007"
+    datos = {
+        "ean": ean,
+        "nombre": "Leche entera",
+        "categoria": "lacteos",
+        "ubicacion": "nevera",
+        "unidad": "litros",
+        "precio": "1.20",
+        "cantidad": "2",
+        "supermercado": "Carrefour",
+    }
+
+    respuesta = cliente.post("/api/barcode/register", data=datos)
+
+    assert respuesta.status_code == 200
+    item = respuesta.json()
+    assert item["stock_actual"] == 2.0
+    ruta = vault.vault_path / "inventario" / "nevera" / f"{item['id']}.md"
+    post = frontmatter.loads(ruta.read_text(encoding="utf-8"))
+    assert post.metadata["lotes"][0]["supermercado"] == "Carrefour"
 
 
 def test_registro_manual_categoria_invalida_400(vault: VaultManager) -> None:

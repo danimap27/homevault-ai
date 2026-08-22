@@ -7,22 +7,36 @@
  */
 
 import type {
+  ActualizarConsumibleInput,
+  ActualizarRecetaInput,
   ActualizarTareaInput,
+  AsignarPlanInput,
+  Categoria,
+  CocinarRecetaInput,
+  CocinarRecetaResultado,
   Consumible,
+  CrearConsumibleInput,
   CrearPerfilInput,
+  CrearRecetaInput,
   CrearTareaInput,
   EntradaListaCompra,
   ItemCaducidad,
+  LocalBarcode,
+  MoverItemInput,
   Perfil,
   PlanSemanal,
   Receta,
+  RecetaPosible,
+  RespuestaBorrarLista,
   RespuestaCheckLista,
+  RespuestaEditarLista,
   ResultadoBatchCooking,
   ResultadoCompra,
   ResultadoConsumo,
   ResultadoImpresion,
   ResumenFinanciero,
   SugerenciaRescate,
+  Supermercado,
   Tarea,
   VistaCalendarioTarea,
 } from "./types";
@@ -55,11 +69,13 @@ export interface RespuestaBarcodeNoEncontrado {
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-/** Error de la API con el status HTTP y el detalle devuelto por FastAPI. */
+/** Error de la API con el status HTTP, el detalle devuelto por FastAPI y el
+ *  cuerpo JSON completo cuando está disponible. */
 export class ErrorApi extends Error {
   constructor(
     public status: number,
     message: string,
+    public data?: unknown,
   ) {
     super(message);
     this.name = "ErrorApi";
@@ -75,13 +91,14 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!resp.ok) {
     let detalle = resp.statusText;
+    let cuerpo: unknown = undefined;
     try {
-      const cuerpo = await resp.json();
-      detalle = cuerpo.detail ?? detalle;
+      cuerpo = await resp.json();
+      detalle = String((cuerpo as { detail?: unknown }).detail ?? detalle);
     } catch {
       // Respuesta sin cuerpo JSON: se conserva el statusText.
     }
-    throw new ErrorApi(resp.status, String(detalle));
+    throw new ErrorApi(resp.status, String(detalle), cuerpo);
   }
   return (await resp.json()) as T;
 }
@@ -104,6 +121,10 @@ function del<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: "DELETE" });
 }
 
+function delQuery<T>(path: string): Promise<T> {
+  return apiFetch<T>(path, { method: "DELETE" });
+}
+
 export const api = {
   // --- Inventario (endpoints reales de backend/main.py) --------------------
 
@@ -112,8 +133,36 @@ export const api = {
       `/api/inventory${ubicacion ? `?ubicacion=${encodeURIComponent(ubicacion)}` : ""}`,
     ),
 
+  crearItem: (item: CrearConsumibleInput) =>
+    post<Consumible>("/api/inventory", item),
+
+  actualizarItem: (id: string, item: ActualizarConsumibleInput) =>
+    put<Consumible>(`/api/inventory/${encodeURIComponent(id)}`, item),
+
+  borrarItem: (id: string) => del<void>(`/api/inventory/${encodeURIComponent(id)}`),
+
+  moverItem: (id: string, cambios: MoverItemInput) =>
+    post<Consumible>(`/api/inventory/${encodeURIComponent(id)}/move`, cambios),
+
   getCaducidades: (daysAhead = 5) =>
     apiFetch<ItemCaducidad[]>(`/api/inventory/expiring?days_ahead=${daysAhead}`),
+
+  // --- Categorías dinámicas ----------------------------------------------------
+
+  getCategorias: () => apiFetch<Categoria[]>("/api/categories"),
+
+  crearCategoria: (categoria: Categoria) =>
+    post<Categoria>("/api/categories", categoria),
+
+  actualizarCategoria: (id: string, cambios: Partial<Categoria>) =>
+    put<Categoria>(`/api/categories/${encodeURIComponent(id)}`, cambios),
+
+  /** DELETE /api/categories/{id}?reemplazar_por=otra_id. El 409 con ítems se
+   *  maneja en el componente para pedir la categoría de reemplazo. */
+  borrarCategoria: (id: string, reemplazarPor?: string) =>
+    delQuery<void>(
+      `/api/categories/${encodeURIComponent(id)}${reemplazarPor ? `?reemplazar_por=${encodeURIComponent(reemplazarPor)}` : ""}`,
+    ),
 
   consumirItem: (itemIdONombre: string, cantidad: number) =>
     post<ResultadoConsumo>("/api/inventory/consume", {
@@ -126,12 +175,14 @@ export const api = {
     cantidad: number,
     precioUnitario: number,
     fechaCaducidad?: string,
+    supermercado?: string,
   ) =>
     post<ResultadoCompra>("/api/inventory/purchase", {
       item_id_o_nombre: itemIdONombre,
       cantidad,
       precio_unitario: precioUnitario,
       ...(fechaCaducidad ? { fecha_caducidad: fechaCaducidad } : {}),
+      ...(supermercado ? { supermercado } : {}),
     }),
 
   // --- Tareas (endpoints reales) --------------------------------------------
@@ -194,6 +245,20 @@ export const api = {
   checkEntradaLista: (itemId: string) =>
     post<RespuestaCheckLista>("/api/shopping-list/check", { item_id: itemId }),
 
+  /** DELETE /api/shopping-list/{item_id} */
+  borrarEntradaLista: (itemId: string) =>
+    del<RespuestaBorrarLista>(`/api/shopping-list/${encodeURIComponent(itemId)}`),
+
+  /** PUT /api/shopping-list/{item_id} {cantidad?, unidad?, categoria?} */
+  editarEntradaLista: (
+    itemId: string,
+    cambios: { cantidad?: number; unidad?: string; categoria?: string },
+  ) =>
+    put<RespuestaEditarLista>(
+      `/api/shopping-list/${encodeURIComponent(itemId)}`,
+      cambios,
+    ),
+
   /** POST /api/print/receipt-list (impresora térmica) */
   imprimirListaCompra: () => post<ResultadoImpresion>("/api/print/receipt-list"),
 
@@ -202,8 +267,32 @@ export const api = {
   /** GET /api/recipes */
   getRecetas: () => apiFetch<Receta[]>("/api/recipes"),
 
+  /** GET /api/recipes/{id} */
+  getReceta: (id: string) => apiFetch<Receta>(`/api/recipes/${encodeURIComponent(id)}`),
+
+  /** POST /api/recipes */
+  crearReceta: (receta: CrearRecetaInput) => post<Receta>("/api/recipes", receta),
+
+  /** PUT /api/recipes/{id} */
+  actualizarReceta: (id: string, receta: ActualizarRecetaInput) =>
+    put<Receta>(`/api/recipes/${encodeURIComponent(id)}`, receta),
+
+  /** DELETE /api/recipes/{id} */
+  borrarReceta: (id: string) => del<void>(`/api/recipes/${encodeURIComponent(id)}`),
+
+  /** GET /api/recipes/possible */
+  getRecetasPosibles: () => apiFetch<RecetaPosible[]>("/api/recipes/possible"),
+
+  /** POST /api/recipes/{id}/cook */
+  cocinarReceta: (id: string, input?: CocinarRecetaInput) =>
+    post<CocinarRecetaResultado>(`/api/recipes/${encodeURIComponent(id)}/cook`, input ?? {}),
+
   /** GET /api/planner/current (semana ISO actual) */
   getPlanActual: () => apiFetch<PlanSemanal>("/api/planner/current"),
+
+  /** POST /api/planner/assign */
+  asignarPlan: (input: AsignarPlanInput) =>
+    post<CocinarRecetaResultado>("/api/planner/assign", input),
 
   /** PUT /api/planner/current */
   guardarPlan: (plan: PlanSemanal) =>
@@ -239,13 +328,27 @@ export const api = {
 
   // --- Ingesta de tickets (endpoint real) ----------------------------------------
 
-  ingerirTicketTexto: (texto: string, comercio?: string, total?: number) =>
-    post<unknown>("/api/ingest/receipt", { texto, comercio, total }),
+  ingerirTicketTexto: (
+    texto: string,
+    comercio?: string,
+    total?: number,
+    supermercado?: string,
+  ) =>
+    post<unknown>("/api/ingest/receipt", {
+      texto,
+      comercio,
+      total,
+      ...(supermercado ? { supermercado } : {}),
+    }),
 
   /** Sube la foto del ticket como multipart/form-data (campo "imagen"). */
-  ingerirTicketImagen: async (archivo: File): Promise<unknown> => {
+  ingerirTicketImagen: async (
+    archivo: File,
+    supermercado?: string,
+  ): Promise<unknown> => {
     const form = new FormData();
     form.append("imagen", archivo);
+    if (supermercado) form.append("supermercado", supermercado);
     const resp = await fetch(`${API_URL}/api/ingest/receipt`, {
       method: "POST",
       body: form, // sin Content-Type: el navegador pone el boundary
@@ -305,4 +408,35 @@ export const api = {
     }
     return (await resp.json()) as Consumible;
   },
+
+  // --- Supermercados ----------------------------------------------------------
+
+  getSupermercados: () => apiFetch<Supermercado[]>("/api/supermarkets"),
+
+  crearSupermercado: (nombre: string) =>
+    post<Supermercado>("/api/supermarkets", { nombre }),
+
+  actualizarSupermercado: (
+    id: string,
+    cambios: { nombre?: string; predeterminado?: boolean },
+  ) => put<Supermercado>(`/api/supermarkets/${encodeURIComponent(id)}`, cambios),
+
+  borrarSupermercado: (id: string) =>
+    del<void>(`/api/supermarkets/${encodeURIComponent(id)}`),
+
+  // --- Base de datos local de códigos de barras -------------------------------
+
+  getLocalBarcodes: () => apiFetch<LocalBarcode[]>("/api/local-barcodes"),
+
+  getLocalBarcode: (ean: string) =>
+    apiFetch<LocalBarcode>(`/api/local-barcodes/${encodeURIComponent(ean)}`),
+
+  crearLocalBarcode: (barcode: LocalBarcode) =>
+    post<LocalBarcode>("/api/local-barcodes", barcode),
+
+  actualizarLocalBarcode: (ean: string, barcode: LocalBarcode) =>
+    put<LocalBarcode>(`/api/local-barcodes/${encodeURIComponent(ean)}`, barcode),
+
+  borrarLocalBarcode: (ean: string) =>
+    del<void>(`/api/local-barcodes/${encodeURIComponent(ean)}`),
 };

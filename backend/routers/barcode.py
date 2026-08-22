@@ -42,6 +42,7 @@ from backend.ai_vision_parser import (
     _slugificar,
     extraer_precio_desde_imagen,
 )
+from backend.local_barcodes import LocalBarcode, LocalBarcodeManager
 from backend.models import Consumible, ResultadoConsumo
 from backend.off_client import OFFClient, ProductoOFF, map_off_to_consumible
 from backend.vault_manager import VaultManager, ahora_utc
@@ -63,7 +64,7 @@ class RespuestaBarcode(BaseModel):
 
     item: Consumible
     creado: bool
-    origen: Literal["vault", "off"]
+    origen: Literal["vault", "local", "off"]
     producto_off: Optional[ProductoOFF] = None
 
 
@@ -109,6 +110,11 @@ def _off_client(request: Request) -> OFFClient:
 def _receipt_parser(request: Request) -> Optional[ReceiptParser]:
     """Recupera el ReceiptParser del estado de la app, si existe."""
     return getattr(request.app.state, "receipt_parser", None)
+
+
+def _local_barcode_manager(request: Request) -> LocalBarcodeManager:
+    """Recupera o crea el LocalBarcodeManager ligado al vault actual."""
+    return LocalBarcodeManager(request.app.state.vault.vault_path)
 
 
 def _extension_segura(content_type: Optional[str]) -> str:
@@ -226,6 +232,44 @@ async def _crear_item_desde_off(
     return nuevo
 
 
+async def _crear_item_desde_local_barcode(
+    vault: VaultManager, barcode: LocalBarcode
+) -> Consumible:
+    """Crea un Consumible a partir de un código de barras local.
+
+    El ítem nace con stock_actual 0, stock_minimo 1, ean_barcode y
+    auto_lista_compra activado; la información local va en el cuerpo Markdown.
+    """
+    slug = _slugificar(barcode.nombre)
+    item_id = f"item_{slug}"
+    if await vault.get_item(item_id) is not None:
+        item_id = f"item_{slug}_{uuid.uuid4().hex[:6]}"
+    nuevo = Consumible(
+        id=item_id,
+        nombre=barcode.nombre,
+        ean_barcode=barcode.ean,
+        categoria=barcode.categoria,
+        ubicacion=barcode.ubicacion,
+        stock_actual=0.0,
+        stock_minimo=1.0,
+        unidad=barcode.unidad,
+        precio_unitario_estimado=barcode.precio_unitario_estimado,
+        lotes=[],
+        auto_lista_compra=True,
+        tags=barcode.tags + ["local_barcode"],
+        ultima_actualizacion=ahora_utc(),
+    )
+    ruta = vault.vault_path / "inventario" / barcode.ubicacion / f"{item_id}.md"
+    cuerpo = (
+        f"# {barcode.nombre}\n\n"
+        f"**Código de barras:** {barcode.ean}\n\n"
+        f"Producto registrado desde la base de datos local de códigos de barras.\n"
+    )
+    await vault._write_doc(ruta, nuevo, cuerpo)
+    logger.info("Ítem creado desde local barcode: %s (%s)", item_id, ruta)
+    return nuevo
+
+
 async def _sugerencias_fusion(
     vault: VaultManager, limite: int = 10
 ) -> list[SugerenciaFusion]:
@@ -268,15 +312,21 @@ async def _resolver_precio_desde_foto(
 async def escanear_barcode(
     request: Request, ean: str
 ) -> RespuestaBarcode | JSONResponse:
-    """Resuelve un código de barras: vault primero, Open Food Facts después.
+    """Resuelve un código de barras: vault, local barcodes, Open Food Facts.
 
-    Si el EAN no existe ni en el vault ni en OFF, devuelve 404 con una lista
-    de sugerencias de ítems existentes para posible fusión.
+    Si el EAN no existe en ninguna fuente, devuelve 404 con una lista de
+    sugerencias de ítems existentes para posible fusión.
     """
     vault = _vault(request)
     existente = await vault.get_item_by_ean(ean)
     if existente is not None:
         return RespuestaBarcode(item=existente, creado=False, origen="vault")
+
+    local_manager = _local_barcode_manager(request)
+    local = local_manager.obtener(ean)
+    if local is not None:
+        item = await _crear_item_desde_local_barcode(vault, local)
+        return RespuestaBarcode(item=item, creado=True, origen="local")
 
     cliente = _off_client(request)
     try:
@@ -335,6 +385,7 @@ async def registrar_producto_barcode(
     precio: Optional[float] = Form(default=None),
     cantidad: float = Form(default=1.0),
     fecha_caducidad: Optional[date] = Form(default=None),
+    supermercado: Optional[str] = Form(default=None),
     foto_producto: Optional[UploadFile] = File(default=None),
     foto_precio: Optional[UploadFile] = File(default=None),
     merge_target_id: Optional[str] = Form(default=None),
@@ -353,12 +404,12 @@ async def registrar_producto_barcode(
 
     # Validación de catálogos
     from backend.ai_vision_parser import (
-        CATEGORIAS_VALIDAS,
         UBICACIONES_VALIDAS,
         UNIDADES_VALIDAS,
     )
 
-    if categoria not in CATEGORIAS_VALIDAS:
+    categoria_manager = _vault(request).categoria_manager
+    if not categoria_manager.existe(categoria):
         raise HTTPException(
             status_code=400,
             detail=f"Categoría no válida: {categoria}",
@@ -401,7 +452,11 @@ async def registrar_producto_barcode(
 
         if cantidad > 0 and precio_final is not None and precio_final >= 0:
             await vault.add_purchase(
-                merge_target_id, cantidad, precio_final, fecha_caducidad
+                merge_target_id,
+                cantidad,
+                precio_final,
+                fecha_caducidad,
+                supermercado=supermercado,
             )
 
         return await vault.get_item(merge_target_id)
@@ -437,7 +492,10 @@ async def registrar_producto_barcode(
     await vault._write_doc(ruta, nuevo, "\n".join(cuerpo_lineas))
 
     if cantidad > 0 and precio_final is not None and precio_final >= 0:
-        await vault.add_purchase(item_id, cantidad, precio_final, fecha_caducidad)
+        await vault.add_purchase(
+            item_id, cantidad, precio_final, fecha_caducidad,
+            supermercado=supermercado,
+        )
 
     logger.info("Ítem registrado manualmente: %s (%s)", item_id, ruta)
     return await vault.get_item(item_id)

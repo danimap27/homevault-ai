@@ -272,3 +272,18 @@ async def test_consumo_item_inexistente(vault_poblado: VaultManager) -> None:
     """Consumir un ítem inexistente lanza KeyError."""
     with pytest.raises(KeyError):
         await vault_poblado.consume_item("item_fantasma", 1.0)
+
+
+async def test_add_purchase_guarda_supermercado_en_lote(
+    vault_poblado: VaultManager,
+) -> None:
+    """add_purchase almacena el supermercado en el lote y en el resultado."""
+    resultado = await vault_poblado.add_purchase(
+        "item_test_01", 2.0, 0.75, supermercado="Lidl"
+    )
+
+    assert resultado.supermercado == "Lidl"
+    item = await vault_poblado.get_item("item_test_01")
+    assert item is not None
+    lote = next(l for l in item.lotes if l.id_lote == resultado.id_lote)
+    assert lote.supermercado == "Lidl"

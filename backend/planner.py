@@ -25,10 +25,14 @@ from typing import Optional, get_args
 from pydantic import BaseModel, Field
 
 from backend.models import (
+    ComidaPlanificada,
     Consumible,
     Ingrediente,
+    IngredienteFaltante,
     ItemCaducidad,
+    PlanSemanal,
     Receta,
+    RecetaPosible,
     Ubicacion,
 )
 
@@ -112,6 +116,40 @@ class ResultadoEvento(BaseModel):
 
     invitados: int
     faltantes: list[FaltanteEvento] = Field(default_factory=list)
+
+
+class IngredienteConsumido(BaseModel):
+    """Ingrediente descontado del inventario al cocinar una receta."""
+
+    item_id: str
+    nombre: str
+    cantidad: float
+    unidad: str
+    stock_actual: float
+
+
+class ResultadoCocinarReceta(BaseModel):
+    """Resultado de cocinar una receta consumiendo sus ingredientes."""
+
+    consumidos: list[IngredienteConsumido] = Field(default_factory=list)
+    faltantes: list[IngredienteFaltante] = Field(default_factory=list)
+
+
+class ResultadoAsignarPlan(BaseModel):
+    """Resultado de asignar una receta a un slot del planificador semanal."""
+
+    plan: PlanSemanal
+    faltantes_anadidos: list[IngredienteFaltante] = Field(
+        default_factory=list
+    )
+
+
+class InsufficientStockError(Exception):
+    """Faltan ingredientes en inventario para cocinar una receta."""
+
+    def __init__(self, faltantes: list[IngredienteFaltante]) -> None:
+        self.faltantes = faltantes
+        super().__init__("Stock insuficiente para cocinar la receta")
 
 
 # --- Lógica de negocio ----------------------------------------------------------
@@ -352,3 +390,218 @@ class Planner:
                     )
                 )
         return resultado
+
+    # --- "¿Qué recetas puedo hacer?" --------------------------------------------
+
+    async def _calcular_faltantes(
+        self, receta: Receta, raciones: int
+    ) -> list[IngredienteFaltante]:
+        """Calcula los ingredientes vinculados que faltan para ``raciones``.
+
+        Devuelve solo faltantes positivos con la cantidad necesaria de compra.
+        """
+        if receta.raciones <= 0:
+            raise ValueError("La receta debe tener raciones > 0")
+        factor = raciones / receta.raciones
+        faltantes: list[IngredienteFaltante] = []
+
+        for ing in receta.ingredientes:
+            if not ing.item_id:
+                continue
+            cantidad_necesaria = round(ing.cantidad * factor, 6)
+            item = await self._vault.get_item(ing.item_id)
+            disponible = item.stock_actual if item is not None else 0.0
+            cantidad_faltante = round(max(cantidad_necesaria - disponible, 0.0), 6)
+            if cantidad_faltante > 0:
+                faltantes.append(
+                    IngredienteFaltante(
+                        item_id=ing.item_id,
+                        nombre=ing.nombre,
+                        cantidad=cantidad_faltante,
+                        unidad=ing.unidad,
+                    )
+                )
+        return faltantes
+
+    async def possible_recipes(self) -> list[RecetaPosible]:
+        """Recetas ordenadas por completitud respecto al inventario actual.
+
+        El score es la proporción de ingredientes con ``item_id`` que tienen
+        stock suficiente. En empate gana la receta con menos cantidad faltante.
+        Las recetas sin ingredientes vinculados obtienen score 1.0.
+        """
+        recetas = await self._vault.list_recipes()
+        resultado: list[RecetaPosible] = []
+
+        for receta in recetas:
+            ingredientes_con_item = [
+                ing for ing in receta.ingredientes if ing.item_id
+            ]
+            total_con_item = len(ingredientes_con_item)
+
+            satisfechos = 0
+            for ing in ingredientes_con_item:
+                item = await self._vault.get_item(ing.item_id)
+                if item is not None and item.stock_actual >= ing.cantidad:
+                    satisfechos += 1
+
+            faltantes = await self._calcular_faltantes(receta, receta.raciones)
+            if total_con_item > 0:
+                score = round(satisfechos / total_con_item, 4)
+            else:
+                score = 1.0
+
+            resultado.append(
+                RecetaPosible(
+                    receta=receta,
+                    ingredientes_satisfechos=satisfechos,
+                    ingredientes_faltantes=total_con_item - satisfechos,
+                    score=score,
+                    faltantes_para_compra=faltantes,
+                )
+            )
+
+        resultado.sort(
+            key=lambda r: (-r.score, sum(f.cantidad for f in r.faltantes_para_compra))
+        )
+        return resultado
+
+    async def cook_recipe(
+        self, receta_id: str, raciones: int | None = None
+    ) -> ResultadoCocinarReceta:
+        """Consume del inventario los ingredientes de una receta.
+
+        El comportamiento es transaccional: se prechequea el stock de todos
+        los ingredientes vinculados. Si falta alguno no se consume nada y se
+        lanza ``InsufficientStockError`` con el listado de faltantes.
+
+        Args:
+            receta_id: identificador de la receta.
+            raciones: porciones a cocinar. Por defecto las de la receta.
+
+        Raises:
+            KeyError: si la receta no existe.
+            ValueError: si ``raciones`` es menor que 1.
+            InsufficientStockError: si falta stock para algún ingrediente.
+        """
+        receta = await self._vault.get_receta(receta_id)
+        if receta is None:
+            raise KeyError(f"Receta no encontrada: {receta_id}")
+
+        raciones = raciones if raciones is not None else receta.raciones
+        if raciones < 1:
+            raise ValueError("raciones debe ser >= 1")
+
+        faltantes = await self._calcular_faltantes(receta, raciones)
+        if faltantes:
+            raise InsufficientStockError(faltantes)
+
+        factor = raciones / receta.raciones
+        consumidos: list[IngredienteConsumido] = []
+        for ing in receta.ingredientes:
+            if not ing.item_id:
+                continue
+            cantidad = round(ing.cantidad * factor, 6)
+            resultado = await self._vault.consume_item(ing.item_id, cantidad)
+            consumidos.append(
+                IngredienteConsumido(
+                    item_id=ing.item_id,
+                    nombre=ing.nombre,
+                    cantidad=cantidad,
+                    unidad=ing.unidad,
+                    stock_actual=resultado.stock_actual,
+                )
+            )
+
+        return ResultadoCocinarReceta(consumidos=consumidos, faltantes=[])
+
+    # --- Planificación semanal --------------------------------------------------
+
+    async def assign_recipe_to_plan(
+        self,
+        semana_iso: str,
+        dia: str,
+        toma: str,
+        receta_id: str,
+        raciones: int,
+    ) -> ResultadoAsignarPlan:
+        """Asigna una receta a un slot del planificador y lista los faltantes.
+
+        Crea el archivo ``planificador/<semana_iso>.md`` si no existe, calcula
+        los ingredientes faltantes para las raciones indicadas y los añade a
+        ``listas/compra.md``.
+
+        Raises:
+            KeyError: si la receta no existe.
+            ValueError: si la semana ISO, el día o la toma no son válidos.
+        """
+        receta = await self._vault.get_receta(receta_id)
+        if receta is None:
+            raise KeyError(f"Receta no encontrada: {receta_id}")
+
+        if raciones < 1:
+            raise ValueError("raciones debe ser >= 1")
+
+        try:
+            anio_str, semana_str = semana_iso.split("-W")
+            anio = int(anio_str)
+            semana = int(semana_str)
+            fecha_inicio = date.fromisocalendar(anio, semana, 1)
+            fecha_fin = date.fromisocalendar(anio, semana, 7)
+        except ValueError as exc:
+            raise ValueError(
+                f"Semana ISO inválida (formato YYYY-Www): {semana_iso}"
+            ) from exc
+
+        dias_validos = [
+            "lunes",
+            "martes",
+            "miercoles",
+            "jueves",
+            "viernes",
+            "sabado",
+            "domingo",
+        ]
+        if dia not in dias_validos:
+            raise ValueError(f"Día no válido: {dia}")
+        if toma not in ("comida", "cena"):
+            raise ValueError(f"Toma no válida: {toma}")
+
+        ruta = self._vault.vault_path / "planificador" / f"{semana_iso}.md"
+        lock = await self._vault._get_lock(ruta)
+        async with lock:
+            if ruta.exists():
+                plan, cuerpo = await self._vault._read_doc(ruta, PlanSemanal)
+            else:
+                plan = PlanSemanal(
+                    semana_iso=semana_iso,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
+                )
+                cuerpo = f"# Semana {semana_iso}\n"
+
+            if dia not in plan.dias:
+                plan.dias[dia] = {}
+            plan.dias[dia][toma] = ComidaPlanificada(
+                receta_id=receta_id,
+                raciones=raciones,
+                stock_deducido=False,
+            )
+            await self._vault._write_doc(ruta, plan, cuerpo)
+
+        faltantes = await self._calcular_faltantes(receta, raciones)
+        anadidos: list[IngredienteFaltante] = []
+        for faltante in faltantes:
+            item = await self._vault.get_item(faltante.item_id)
+            categoria = item.categoria if item is not None else None
+            anadido = await self._vault.add_shopping_list_entry(
+                nombre=faltante.nombre,
+                item_id=faltante.item_id,
+                cantidad=faltante.cantidad,
+                unidad=faltante.unidad,
+                categoria=categoria,
+            )
+            if anadido:
+                anadidos.append(faltante)
+
+        return ResultadoAsignarPlan(plan=plan, faltantes_anadidos=anadidos)

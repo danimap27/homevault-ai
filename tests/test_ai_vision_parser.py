@@ -304,6 +304,43 @@ async def test_gastos_meses_distintos_archivos_distintos(
     assert (vault.vault_path / "gastos" / "2026-09.md").exists()
 
 
+async def test_register_purchase_guarda_supermercado(
+    vault_poblado: VaultManager,
+) -> None:
+    """El supermercado explícito se propaga al gasto y al lote del ítem."""
+    ticket = TicketParseado.model_validate(json.loads(TICKET_JSON_EXISTENTE))
+    resultado = await register_purchase(
+        vault_poblado, ticket, supermercado="Carrefour"
+    )
+
+    assert resultado.ticket.comercio == "Mercadona"
+    ruta_gasto = vault_poblado.vault_path / "gastos" / "2026-08.md"
+    post = frontmatter.loads(ruta_gasto.read_text(encoding="utf-8"))
+    gasto = GastoMes.model_validate(post.metadata)
+    assert gasto.tickets[0].supermercado == "Carrefour"
+
+    item = await vault_poblado.get_item("item_test_01")
+    assert item is not None
+    # El lote añadado por register_purchase es el último de la lista
+    lote_nuevo = item.lotes[-1]
+    assert lote_nuevo.supermercado == "Carrefour"
+
+
+async def test_register_purchase_supermercado_por_defecto_es_comercio(
+    vault: VaultManager,
+) -> None:
+    """Si no se indica supermercado, se usa el comercio del ticket."""
+    ticket = TicketParseado(
+        comercio="Aldi", fecha=date(2026, 8, 15), total_ticket=5.0
+    )
+    resultado = await register_purchase(vault, ticket)
+
+    ruta_gasto = vault.vault_path / "gastos" / "2026-08.md"
+    post = frontmatter.loads(ruta_gasto.read_text(encoding="utf-8"))
+    gasto = GastoMes.model_validate(post.metadata)
+    assert gasto.tickets[0].supermercado == "Aldi"
+
+
 def test_slugificar() -> None:
     """El slug es ASCII snake_case determinista."""
     assert _slugificar("Pizza barbacoa") == "pizza_barbacoa"

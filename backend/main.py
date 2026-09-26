@@ -18,16 +18,18 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.ai_chat import HomeChat
 from backend.ai_vision_parser import (
     ErrorParseoTicket,
     GastoMes,
+    OllamaAdapter,
     ReceiptParser,
     ResultadoRegistroCompra,
     build_llm_client,
@@ -36,11 +38,19 @@ from backend.categorias import Categoria, CategoriaManager
 from backend.config import get_settings
 from backend.git_sync import GitSync
 from backend.google_sync import GoogleSync, build_google_sync
+from backend.insights import (
+    construir_predicciones,
+    estadisticas_tareas,
+    items_bajo_minimo,
+    sugerencias_reposicion,
+    valor_inventario,
+)
 from backend.local_barcodes import LocalBarcode, LocalBarcodeManager
 from backend.models import (
     Consumible,
     ConsumibleRequerido,
     EntradaListaCompra,
+    EstadisticasTareas,
     Frecuencia,
     Ingrediente,
     IngredienteFaltante,
@@ -48,11 +58,17 @@ from backend.models import (
     ItemHuerfano,
     Perfil,
     PlanSemanal,
+    PrediccionAgotamiento,
     Prioridad,
     Receta,
     RecetaPosible,
+    ResumenDesperdicio,
+    ResumenInteligencia,
+    RespuestaChat,
     ResultadoCompra,
     ResultadoConsumo,
+    ResultadoDesperdicio,
+    SugerenciaReposicion,
     Tarea,
     VistaCalendarioTarea,
 )
@@ -74,7 +90,7 @@ from backend.planner import (
     ResultadoCocinarReceta,
 )
 from backend.supermercados import Supermercado, SupermercadoManager
-from backend.vault_manager import VaultManager
+from backend.vault_manager import VaultManager, ahora_utc
 from backend.watcher import VaultWatcher, WebSocketManager
 
 logger = logging.getLogger(__name__)
@@ -220,6 +236,19 @@ async def lifespan(app: FastAPI):
                 "responderá 503"
             )
     app.state.receipt_parser = parser
+
+    # Asistente del hogar: chat con el LLM local (Ollama del homelab).
+    # think=False desactiva el modo razonamiento de los modelos híbridos
+    # (qwen3.5): en CPU la respuesta pasa de >5 min a ~40 s.
+    app.state.home_chat = HomeChat(
+        vault,
+        OllamaAdapter(
+            base_url=settings.ollama_base_url,
+            model=settings.ai_chat_model,
+            think=False,
+            timeout=300.0,
+        ),
+    )
 
     # Gestor de WebSockets y observador del vault (Fase 4)
     ws_manager = WebSocketManager()
@@ -522,6 +551,48 @@ async def editar_entrada_lista(
     return {"item_id": item_id, "editadas": editadas}
 
 
+class PeticionAnadirListaCompra(BaseModel):
+    """Cuerpo de POST /api/shopping-list (añadir manualmente)."""
+
+    nombre: str = Field(min_length=1)
+    cantidad: Optional[float] = None
+    unidad: Optional[str] = None
+    categoria: Optional[str] = None
+
+
+@app.post("/api/shopping-list", status_code=201)
+async def anadir_entrada_lista(
+    request: Request, peticion: PeticionAnadirListaCompra
+) -> dict:
+    """Añade una línea pendiente a listas/compra.md (sin duplicar)."""
+    vault = _vault(request)
+    item = await vault.resolve_item(peticion.nombre)
+    if item is not None:
+        anadido = await vault.add_shopping_list_entry(
+            item.nombre,
+            item_id=item.id,
+            unidad=peticion.unidad or item.unidad,
+            categoria=peticion.categoria or item.categoria,
+        )
+        return {
+            "anadido": anadido,
+            "item_id": item.id,
+            "nombre": item.nombre,
+            "categoria": item.categoria,
+        }
+    anadido = await vault.add_shopping_list_entry(
+        peticion.nombre,
+        cantidad=peticion.cantidad,
+        unidad=peticion.unidad,
+        categoria=peticion.categoria,
+    )
+    return {
+        "anadido": anadido,
+        "item_id": None,
+        "nombre": peticion.nombre,
+    }
+
+
 # --- Ingesta de tickets con IA (Fase 3) -------------------------------------------
 
 
@@ -668,6 +739,16 @@ async def crear_tarea(request: Request, peticion: CrearTarea) -> Tarea:
             status_code=409,
             detail=f"Ya existe una tarea con el slug '{slug}'",
         ) from exc
+
+    # Sync a Google Tasks + Calendar si las credenciales están disponibles
+    try:
+        sync: GoogleSync = getattr(request.app.state, "google_sync", None)
+        if sync is not None and sync.tasks_client is not None:
+            tarea = await sync.create_task_in_google(tarea)
+    except Exception:
+        logger.exception(
+            "No se pudo sincronizar la tarea con Google; se queda solo local"
+        )
     return tarea
 
 
@@ -883,6 +964,172 @@ async def resumen_financiero(request: Request, mes: str) -> ResumenFinanciero:
             for cat, tot in sorted(totales.items())
         ],
     )
+
+
+# --- Inteligencia del hogar y asistente (Fase 7) -------------------------------
+
+
+@app.get("/api/insights", response_model=ResumenInteligencia)
+async def resumen_inteligencia(request: Request) -> ResumenInteligencia:
+    """Panel de inteligencia: reposición sugerida, predicciones y métricas."""
+    vault = _vault(request)
+    ahora = ahora_utc()
+    mes = ahora.strftime("%Y-%m")
+    items = await vault.list_items()
+    entradas = await vault.get_shopping_list()
+    tareas = await vault.list_tasks()
+    expiring = await vault.query_expiring(7)
+    return ResumenInteligencia(
+        fecha=ahora.date(),
+        valor_inventario=valor_inventario(items),
+        total_items=len(items),
+        items_bajo_minimo=items_bajo_minimo(items),
+        caducidades_7_dias=len(expiring),
+        reposicion=sugerencias_reposicion(items, entradas, ahora=ahora),
+        predicciones=construir_predicciones(items, ahora=ahora, limite=12),
+        desperdicio_mes=await vault.resumen_desperdicio(mes),
+        tareas=estadisticas_tareas(tareas, ahora=ahora),
+    )
+
+
+@app.get(
+    "/api/insights/predictions",
+    response_model=list[PrediccionAgotamiento],
+)
+async def predicciones_agotamiento(
+    request: Request,
+) -> list[PrediccionAgotamiento]:
+    """Predicción de agotamiento de los ítems con historial suficiente."""
+    return construir_predicciones(
+        await _vault(request).list_items(), ahora=ahora_utc()
+    )
+
+
+@app.get("/api/insights/restock", response_model=list[SugerenciaReposicion])
+async def sugerencias_de_reposicion(
+    request: Request,
+) -> list[SugerenciaReposicion]:
+    """Ítems que conviene reponer, ordenados por urgencia."""
+    vault = _vault(request)
+    entradas = await vault.get_shopping_list()
+    return sugerencias_reposicion(
+        await vault.list_items(), entradas, ahora=ahora_utc()
+    )
+
+
+@app.get("/api/insights/waste", response_model=ResumenDesperdicio)
+async def resumen_desperdicio_mes(
+    request: Request, mes: Optional[str] = None
+) -> ResumenDesperdicio:
+    """Desperdicio registrado en un mes (por defecto, el actual)."""
+    mes = mes or ahora_utc().strftime("%Y-%m")
+    if not _REGEX_MES.match(mes):
+        raise HTTPException(
+            status_code=400, detail=f"Mes inválido (formato YYYY-MM): {mes}"
+        )
+    return await _vault(request).resumen_desperdicio(mes)
+
+
+@app.get("/api/insights/tasks", response_model=EstadisticasTareas)
+async def estadisticas_de_tareas(
+    request: Request, mes: Optional[str] = None
+) -> EstadisticasTareas:
+    """Estadísticas de tareas: equidad, vencidas y cumplimiento."""
+    if mes is not None and not _REGEX_MES.match(mes):
+        raise HTTPException(
+            status_code=400, detail=f"Mes inválido (formato YYYY-MM): {mes}"
+        )
+    return estadisticas_tareas(
+        await _vault(request).list_tasks(), ahora=ahora_utc(), mes=mes
+    )
+
+
+class PeticionMerma(BaseModel):
+    """Cuerpo de POST /api/inventory/{item_id}/waste."""
+
+    cantidad: float = Field(gt=0)
+    motivo: Literal["caducado", "estropeado", "no_deseado", "otro"] = "caducado"
+
+
+@app.post("/api/inventory/{item_id}/waste", response_model=ResultadoDesperdicio)
+async def registrar_merma(
+    request: Request, item_id: str, peticion: PeticionMerma
+) -> ResultadoDesperdicio:
+    """Registra una merma (producto tirado) y descuenta su stock."""
+    vault = _vault(request)
+    try:
+        registro, item = await vault.register_waste(
+            item_id, peticion.cantidad, peticion.motivo
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    resumen = await vault.resumen_desperdicio(
+        registro.fecha.strftime("%Y-%m")
+    )
+    return ResultadoDesperdicio(
+        item_id=item.id,
+        nombre=item.nombre,
+        cantidad=registro.cantidad,
+        stock_actual=item.stock_actual,
+        valor_estimado=registro.valor_estimado,
+        resumen_mes=resumen,
+    )
+
+
+class PeticionSnooze(BaseModel):
+    """Cuerpo de POST /api/tasks/{task_id}/snooze."""
+
+    dias: int = Field(default=1, ge=1, le=365)
+
+
+@app.post("/api/tasks/{task_id}/snooze", response_model=Tarea)
+async def posponer_tarea(
+    request: Request, task_id: str, peticion: PeticionSnooze
+) -> Tarea:
+    """Pospone una tarea N días desde hoy (o desde su fecha si es futura)."""
+    vault = _vault(request)
+    path = await vault._find_task_path(task_id)
+    if path is None:
+        raise HTTPException(
+            status_code=404, detail=f"Tarea no encontrada: {task_id}"
+        )
+    lock = await vault._get_lock(path)
+    async with lock:
+        tarea, cuerpo = await vault._read_doc(path, Tarea)
+        hoy = date.today()
+        base = tarea.fecha_programada or hoy
+        base = max(base, hoy)
+        tarea.fecha_programada = base + timedelta(days=peticion.dias)
+        await vault._write_doc(path, tarea, cuerpo)
+    return tarea
+
+
+class PeticionChat(BaseModel):
+    """Cuerpo de POST /api/ai/chat."""
+
+    mensaje: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/ai/chat", response_model=RespuestaChat)
+async def chat_del_hogar(
+    request: Request, peticion: PeticionChat
+) -> RespuestaChat:
+    """Pregunta al asistente del hogar (LLM local con contexto del vault)."""
+    chat: Optional[HomeChat] = getattr(request.app.state, "home_chat", None)
+    if chat is None:
+        raise HTTPException(
+            status_code=503, detail="El asistente no está configurado"
+        )
+    try:
+        return await chat.responder(peticion.mensaje)
+    except Exception as exc:
+        logger.exception("Error del asistente del hogar")
+        raise HTTPException(
+            status_code=503,
+            detail=f"El asistente no está disponible: {exc}",
+        ) from exc
 
 
 # --- Perfiles de usuario (estilo Netflix) -------------------------------------

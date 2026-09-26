@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     ai_api_key: Optional[str] = None
     ai_model: Optional[str] = None  # vacío = modelo por defecto del proveedor
     ollama_base_url: str = "http://localhost:11434"
+    ai_chat_model: str = "qwen3.5:4b"  # modelo local del asistente del hogar
 
     # Domótica MQTT + Home Assistant (Fase 4a)
     mqtt_host: str = "localhost"

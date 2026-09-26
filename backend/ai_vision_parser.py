@@ -250,9 +250,15 @@ class OllamaAdapter:
         self,
         base_url: str = "http://localhost:11434",
         model: str = "llama3.2-vision",
+        think: Optional[bool] = None,
+        timeout: float = 180.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # None = no enviar el parámetro (comportamiento por defecto del modelo);
+        # False = desactivar el modo razonamiento (clave en CPU con modelos híbridos).
+        self.think = think
+        self.timeout = timeout
 
     async def completar(
         self,
@@ -267,10 +273,12 @@ class OllamaAdapter:
             "prompt": prompt,
             "stream": False,
         }
+        if self.think is not None:
+            cuerpo["think"] = self.think
         if imagen is not None:
             cuerpo["images"] = [base64.b64encode(imagen).decode("ascii")]
         async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=180.0
+            base_url=self.base_url, timeout=self.timeout
         ) as cliente:
             respuesta = await cliente.post("/api/generate", json=cuerpo)
             respuesta.raise_for_status()

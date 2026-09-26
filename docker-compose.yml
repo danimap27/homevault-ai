@@ -12,6 +12,10 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     env_file: .env
+    # Ollama corre en el host (solo loopback): el puente del host escucha en
+    # la IP de gateway de esta red y se alcanza como host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./vault:/app/vault
       - ./credentials:/app/credentials

@@ -20,21 +20,29 @@ import type {
   CrearRecetaInput,
   CrearTareaInput,
   EntradaListaCompra,
+  EstadisticasTareas,
   ItemCaducidad,
   LocalBarcode,
+  MotivoMerma,
   MoverItemInput,
   Perfil,
   PlanSemanal,
+  PrediccionAgotamiento,
   Receta,
   RecetaPosible,
   RespuestaBorrarLista,
   RespuestaCheckLista,
+  RespuestaChat,
   RespuestaEditarLista,
+  ResumenDesperdicio,
+  ResumenFinanciero,
+  ResumenInteligencia,
   ResultadoBatchCooking,
   ResultadoCompra,
   ResultadoConsumo,
+  ResultadoDesperdicio,
   ResultadoImpresion,
-  ResumenFinanciero,
+  SugerenciaReposicion,
   SugerenciaRescate,
   Supermercado,
   Tarea,
@@ -439,4 +447,56 @@ export const api = {
 
   borrarLocalBarcode: (ean: string) =>
     del<void>(`/api/local-barcodes/${encodeURIComponent(ean)}`),
+
+  // --- Inteligencia del hogar (Fase 7) -----------------------------------------
+
+  /** GET /api/insights: panel completo de inteligencia del hogar. */
+  getInsights: () => apiFetch<ResumenInteligencia>("/api/insights"),
+
+  /** GET /api/insights/predictions: agotamiento estimado por ítem. */
+  getPredicciones: () =>
+    apiFetch<PrediccionAgotamiento[]>("/api/insights/predictions"),
+
+  /** GET /api/insights/restock: sugerencias de reposición priorizadas. */
+  getReposicion: () =>
+    apiFetch<SugerenciaReposicion[]>("/api/insights/restock"),
+
+  /** GET /api/insights/waste: desperdicio de un mes (por defecto, actual). */
+  getDesperdicio: (mes?: string) =>
+    apiFetch<ResumenDesperdicio>(
+      `/api/insights/waste${mes ? `?mes=${encodeURIComponent(mes)}` : ""}`,
+    ),
+
+  /** GET /api/insights/tasks: estadísticas de tareas y equidad. */
+  getEstadisticasTareas: (mes?: string) =>
+    apiFetch<EstadisticasTareas>(
+      `/api/insights/tasks${mes ? `?mes=${encodeURIComponent(mes)}` : ""}`,
+    ),
+
+  /** POST /api/inventory/{item_id}/waste: registra una merma. */
+  registrarMerma: (itemId: string, cantidad: number, motivo: MotivoMerma) =>
+    post<ResultadoDesperdicio>(
+      `/api/inventory/${encodeURIComponent(itemId)}/waste`,
+      { cantidad, motivo },
+    ),
+
+  /** POST /api/tasks/{task_id}/snooze: pospone N días. */
+  posponerTarea: (taskId: string, dias: number) =>
+    post<Tarea>(`/api/tasks/${encodeURIComponent(taskId)}/snooze`, { dias }),
+
+  /** POST /api/ai/chat: pregunta al asistente del hogar. */
+  chatear: (mensaje: string) =>
+    post<RespuestaChat>("/api/ai/chat", { mensaje }),
+
+  /** POST /api/shopping-list: añade una entrada manual a la compra. */
+  anadirAListaCompra: (
+    nombre: string,
+    cantidad?: number,
+    unidad?: string,
+    categoria?: string,
+  ) =>
+    post<{ anadido: boolean; item_id: string | null; nombre: string }>(
+      "/api/shopping-list",
+      { nombre, cantidad, unidad, categoria },
+    ),
 };

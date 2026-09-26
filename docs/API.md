@@ -253,3 +253,47 @@ python -m backend.mcp_server
 ```
 
 Ver lista en `README.md`.
+
+---
+
+## Inteligencia del hogar y asistente (Fase 7)
+
+### `GET /api/insights`
+Panel completo: valor del inventario, reposición sugerida, predicciones de agotamiento, desperdicio del mes y estadísticas de tareas.
+
+### `GET /api/insights/predictions`
+Predicción de agotamiento por ítem (`dias_restantes`, `fecha_estimada_agotamiento`, `confianza`) según el historial real de consumos (campo `historial_consumo` del ítem). Los ítems sin datos suficientes no aparecen.
+
+### `GET /api/insights/restock`
+Sugerencias de reposición ordenadas por urgencia (`critica` | `alta` | `media`). Los ítems que nunca se han tenido ni consumido no se sugieren.
+
+### `GET /api/insights/waste`
+**Query params:** `mes` (YYYY-MM, por defecto el actual). Desperdicio registrado: totales, por motivo y últimos registros.
+
+### `POST /api/inventory/{item_id}/waste`
+Registra una merma (producto tirado): descuenta stock (FIFO de lotes) y lo anota en `gastos/desperdicio-YYYY-MM.md`.
+
+```json
+{ "cantidad": 1, "motivo": "caducado" }
+```
+
+Motivos válidos: `caducado`, `estropeado`, `no_deseado`, `otro`.
+
+### `GET /api/insights/tasks`
+**Query params:** `mes` (YYYY-MM, por defecto el actual). Estadísticas de tareas: completadas del mes, equidad por conviviente, vencidas, próximas 7 días y puntualidad de 30 días.
+
+### `POST /api/tasks/{task_id}/snooze`
+Pospone una tarea N días desde hoy (o desde su fecha si es futura).
+
+```json
+{ "dias": 3 }
+```
+
+### `POST /api/ai/chat`
+Pregunta al asistente del hogar: un LLM local (Ollama) recibe el contexto real del vault (inventario, caducidades, compra, tareas y plan semanal) y responde en español.
+
+```json
+{ "mensaje": "¿Qué puedo cenar con lo que caduca?" }
+```
+
+Respuesta: `{ "respuesta": "...", "items_en_contexto": 24, "tareas_en_contexto": 5 }`. Requiere `OLLAMA_BASE_URL` accesible desde el contenedor (en el homelab, el puente `tools/ollama_bridge.py`).

@@ -33,6 +33,13 @@ Prioridad = Literal["baja", "media", "alta", "urgente"]
 # --- A. Consumible (inventario/**.md) ----------------------------------------
 
 
+class ConsumoRegistrado(BaseModel):
+    """Entrada del histórico de consumos de un ítem (base de las predicciones)."""
+
+    fecha: datetime
+    cantidad: float
+
+
 class Lote(BaseModel):
     """Lote FIFO de un consumible."""
 
@@ -63,6 +70,7 @@ class Consumible(BaseModel):
     mqtt_sensor_topic: Optional[str] = None
     dias_promedio_consumo: Optional[float] = None
     ultimo_consumo: Optional[datetime] = None
+    historial_consumo: list[ConsumoRegistrado] = Field(default_factory=list)
     auto_lista_compra: bool = False
     tags: list[str] = Field(default_factory=list)
     ultima_actualizacion: Optional[datetime] = None
@@ -275,3 +283,124 @@ class VistaCalendarioTarea(BaseModel):
     prioridad: Prioridad
     asignado_a: Optional[str] = None
     bloqueada_por_stock: bool = False
+
+
+# --- G. Inteligencia: predicciones, reposición y merma ------------------------
+
+
+class PrediccionAgotamiento(BaseModel):
+    """Proyección de agotamiento de un ítem según su ritmo real de consumo."""
+
+    item_id: str
+    nombre: str
+    unidad: Unidad
+    disponible: float
+    tasa_diaria: float
+    dias_restantes: float
+    fecha_estimada_agotamiento: date
+    confianza: Literal["alta", "media", "baja"]
+
+
+class SugerenciaReposicion(BaseModel):
+    """Ítem que conviene reponer, con urgencia y motivo legible."""
+
+    item_id: str
+    nombre: str
+    categoria: CategoriaItem
+    ubicacion: Ubicacion
+    unidad: Unidad
+    disponible: float
+    stock_minimo: float
+    dias_restantes: Optional[float] = None
+    urgencia: Literal["critica", "alta", "media"]
+    motivo: str
+    ya_en_lista: bool = False
+    precio_estimado: Optional[float] = None
+
+
+class DesperdicioRegistrado(BaseModel):
+    """Unidad de desperdicio (merma) registrada en el vault."""
+
+    fecha: datetime
+    item_id: str
+    nombre: str
+    cantidad: float
+    unidad: Unidad
+    motivo: str = "otro"
+    valor_estimado: float = 0.0
+
+
+class ResumenDesperdicio(BaseModel):
+    """Resumen mensual del desperdicio del hogar."""
+
+    mes: str
+    total_registros: int = 0
+    valor_total: float = 0.0
+    por_motivo: dict[str, int] = Field(default_factory=dict)
+    ultimos: list[DesperdicioRegistrado] = Field(default_factory=list)
+
+
+class ResultadoDesperdicio(BaseModel):
+    """Resultado de registrar una merma sobre un ítem."""
+
+    item_id: str
+    nombre: str
+    cantidad: float
+    stock_actual: float
+    valor_estimado: float
+    resumen_mes: ResumenDesperdicio
+
+
+class CuotaConviviente(BaseModel):
+    """Cuota de tareas completadas por un conviviente (equidad)."""
+
+    nombre: str
+    completadas: int = 0
+    porcentaje: float = 0.0
+
+
+class TareaVencida(BaseModel):
+    """Tarea pendiente cuya fecha programada ya pasó."""
+
+    task_id: str
+    titulo: str
+    fecha_programada: Optional[date] = None
+    dias_retraso: int = 0
+    asignado_a: Optional[str] = None
+    prioridad: Prioridad = "media"
+
+
+class EstadisticasTareas(BaseModel):
+    """Métricas de tareas del hogar para el panel de estadísticas."""
+
+    mes: str
+    completadas_mes: int = 0
+    por_conviviente: list[CuotaConviviente] = Field(default_factory=list)
+    pendientes: int = 0
+    vencidas: int = 0
+    proximas_7_dias: int = 0
+    completadas_30d: int = 0
+    a_tiempo_30d: Optional[int] = None
+    top_vencidas: list[TareaVencida] = Field(default_factory=list)
+
+
+class ResumenInteligencia(BaseModel):
+    """Panel de inteligencia del hogar (endpoint /api/insights)."""
+
+    fecha: date
+    valor_inventario: float = 0.0
+    total_items: int = 0
+    items_bajo_minimo: int = 0
+    caducidades_7_dias: int = 0
+    reposicion: list[SugerenciaReposicion] = Field(default_factory=list)
+    predicciones: list[PrediccionAgotamiento] = Field(default_factory=list)
+    desperdicio_mes: ResumenDesperdicio
+    tareas: EstadisticasTareas
+
+
+class RespuestaChat(BaseModel):
+    """Respuesta del asistente del hogar (chat con LLM local)."""
+
+    respuesta: str
+    items_en_contexto: int = 0
+    tareas_en_contexto: int = 0

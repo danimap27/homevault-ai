@@ -11,10 +11,12 @@ import {
   Home,
   Refrigerator,
   ShoppingCart,
+  Sparkles,
 } from "lucide-react";
 
 const ENLACES = [
   { href: "/", etiqueta: "Inicio", icono: Home },
+  { href: "/asistente", etiqueta: "Asistente", icono: Sparkles },
   { href: "/inventario", etiqueta: "Inventario", icono: Refrigerator },
   { href: "/categorias", etiqueta: "Categorías", icono: FolderOpen },
   { href: "/recetas", etiqueta: "Recetas", icono: BookOpen },

@@ -13,25 +13,29 @@ import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, TypeVar, get_args
+from typing import Optional, TypeVar, cast, get_args
 
 import frontmatter
 import portalocker
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from backend.categorias import CategoriaManager
 from backend.models import (
     Consumible,
+    ConsumoRegistrado,
+    DesperdicioRegistrado,
     EntradaListaCompra,
     Ingrediente,
     ItemCaducidad,
     ItemHuerfano,
     Lote,
     Receta,
+    ResumenDesperdicio,
     ResultadoCompra,
     ResultadoConsumo,
     Tarea,
     Ubicacion,
+    Unidad,
 )
 
 ModeloT = TypeVar("ModeloT", bound=BaseModel)
@@ -52,6 +56,38 @@ CABECERA_LISTA_COMPRA = "# Lista de la compra\n\n"
 def ahora_utc() -> datetime:
     """Devuelve el instante actual en UTC con tzinfo."""
     return datetime.now(timezone.utc)
+
+
+# --- Historial de consumo (base de las predicciones) --------------------------
+
+_MAX_HISTORIAL_CONSUMO = 100  # entradas máximas conservadas por ítem
+_PODA_HISTORIAL_DIAS = 365
+
+
+def podar_historial_consumo(
+    historial: list[ConsumoRegistrado], ahora: datetime
+) -> list[ConsumoRegistrado]:
+    """Recorta el historial: sin entradas de más de un año y máx. 100."""
+    limite = ahora - timedelta(days=_PODA_HISTORIAL_DIAS)
+    recientes = [c for c in historial if c.fecha >= limite]
+    return recientes[-_MAX_HISTORIAL_CONSUMO:]
+
+
+def recalcular_dias_promedio(
+    historial: list[ConsumoRegistrado],
+) -> Optional[float]:
+    """Media de días entre consumos consecutivos (últimos 20 registros).
+
+    Devuelve ``None`` si no hay al menos 3 consumos (2 intervalos), en cuyo
+    caso el valor existente del ítem se conserva.
+    """
+    fechas = sorted(c.fecha for c in historial)[-20:]
+    if len(fechas) < 3:
+        return None
+    intervalos = [
+        (b - a).total_seconds() / 86400 for a, b in zip(fechas, fechas[1:])
+    ]
+    return round(sum(intervalos) / len(intervalos), 2)
 
 
 class VaultManager:
@@ -252,6 +288,17 @@ class VaultManager:
             item.ultima_actualizacion = ahora
             item.fecha_caducidad_proxima = self._caducidad_proxima(item.lotes)
 
+            # Historial para predicciones: registrar el consumo y acotarlo
+            item.historial_consumo.append(
+                ConsumoRegistrado(fecha=ahora, cantidad=cantidad)
+            )
+            item.historial_consumo = podar_historial_consumo(
+                item.historial_consumo, ahora
+            )
+            promedio = recalcular_dias_promedio(item.historial_consumo)
+            if promedio is not None and promedio > 0:
+                item.dias_promedio_consumo = promedio
+
             await self._write_doc(path, item, cuerpo)
 
         bajo_minimo = item.stock_actual <= item.stock_minimo
@@ -321,6 +368,172 @@ class VaultManager:
             stock_actual=item.stock_actual,
             tachado_de_lista_compra=tachado,
             supermercado=supermercado,
+        )
+
+    # --- Merma / desperdicio (gastos/desperdicio-YYYY-MM.md) -------------------
+
+    def _path_desperdicio(self, mes: str) -> Path:
+        return self.vault_path / "gastos" / f"desperdicio-{mes}.md"
+
+    @staticmethod
+    def _parsear_tabla_desperdicio(cuerpo: str) -> list[DesperdicioRegistrado]:
+        """Extrae los registros de la tabla Markdown de un mes de desperdicio."""
+        registros: list[DesperdicioRegistrado] = []
+        for linea in cuerpo.splitlines():
+            if not linea.startswith("|"):
+                continue
+            celdas = [c.strip() for c in linea.strip("|").split("|")]
+            if len(celdas) != 7 or celdas[0] in {"fecha", "-------"}:
+                continue
+            if set(celdas[0]) <= {"-"}:
+                continue
+            try:
+                registros.append(
+                    DesperdicioRegistrado(
+                        fecha=datetime.fromisoformat(celdas[0]),
+                        item_id=celdas[1],
+                        nombre=celdas[2],
+                        cantidad=float(celdas[3]),
+                        unidad=cast("Unidad", celdas[4]),
+                        motivo=celdas[5],
+                        valor_estimado=float(celdas[6]),
+                    )
+                )
+            except (ValueError, ValidationError):
+                # Línea corrupta o de otra versión del formato: se ignora
+                continue
+        return registros
+
+    @staticmethod
+    def _formato_documento_desperdicio(
+        mes: str, registros: list[DesperdicioRegistrado]
+    ) -> str:
+        """Serializa el documento completo de desperdicio de un mes."""
+        total = round(sum(r.valor_estimado for r in registros), 2)
+        lineas = [
+            "---",
+            f'mes: "{mes}"',
+            f"total_registros: {len(registros)}",
+            f"valor_total_estimado: {total}",
+            f"ultima_actualizacion: '{ahora_utc().isoformat()}'",
+            "---",
+            "",
+            f"# Desperdicio {mes}",
+            "",
+            "| fecha | item_id | nombre | cantidad | unidad | motivo | valor |",
+            "|-------|---------|--------|----------|--------|--------|-------|",
+        ]
+        for r in registros:
+            nombre = r.nombre.replace("|", "/")
+            motivo = r.motivo.replace("|", "/")
+            lineas.append(
+                f"| {r.fecha.isoformat()} | {r.item_id} | {nombre} | "
+                f"{r.cantidad:g} | {r.unidad} | {motivo} | {r.valor_estimado:.2f} |"
+            )
+        lineas.append("")
+        return "\n".join(lineas)
+
+    async def register_waste(
+        self, item_id: str, cantidad: float, motivo: str = "otro"
+    ) -> tuple[DesperdicioRegistrado, Consumible]:
+        """Registra una merma: descuenta stock (FIFO de lotes) y anota el gasto.
+
+        Mismo descuento que ``consume_item`` (lotes por caducidad ascendente y
+        después el stock suelto) pero sin tocar ``ultimo_consumo``. Devuelve el
+        registro creado y el ítem actualizado. Lanza ``ValueError`` si la
+        cantidad supera el stock disponible.
+        """
+        if cantidad <= 0:
+            raise ValueError("La cantidad de merma debe ser mayor que cero")
+
+        path = await self._find_item_path(item_id)
+        if path is None:
+            raise KeyError(f"Ítem no encontrado: {item_id}")
+
+        lock = await self._get_lock(path)
+        async with lock:
+            item, cuerpo = await self._read_doc(path, Consumible)
+
+            disponible = round(item.stock_actual, 6)
+            if cantidad - disponible > 1e-6:
+                raise ValueError(
+                    f"Stock insuficiente de '{item.nombre}': "
+                    f"{disponible:g} {item.unidad} disponibles"
+                )
+
+            restante = cantidad
+            lotes_ordenados = sorted(
+                item.lotes,
+                key=lambda l: (l.fecha_caducidad is None, l.fecha_caducidad),
+            )
+            for lote in lotes_ordenados:
+                if restante <= 0:
+                    break
+                tomado = min(lote.cantidad, restante)
+                lote.cantidad = round(lote.cantidad - tomado, 6)
+                restante = round(restante - tomado, 6)
+            item.lotes = [l for l in lotes_ordenados if l.cantidad > 0]
+
+            if restante > 0:
+                item.stock_actual = round(
+                    max(item.stock_actual - restante, 0.0), 6
+                )
+
+            item.ultima_actualizacion = ahora_utc()
+            item.fecha_caducidad_proxima = self._caducidad_proxima(item.lotes)
+
+            await self._write_doc(path, item, cuerpo)
+
+        registro = DesperdicioRegistrado(
+            fecha=ahora_utc(),
+            item_id=item.id,
+            nombre=item.nombre,
+            cantidad=cantidad,
+            unidad=item.unidad,
+            motivo=motivo,
+            valor_estimado=round(
+                cantidad * (item.precio_unitario_estimado or 0.0), 2
+            ),
+        )
+        await self._anadir_registro_desperdicio(registro)
+        return registro, item
+
+    async def _anadir_registro_desperdicio(
+        self, registro: DesperdicioRegistrado
+    ) -> None:
+        """Añade un registro al documento mensual de desperdicio."""
+        mes = registro.fecha.strftime("%Y-%m")
+        path = self._path_desperdicio(mes)
+        lock = await self._get_lock(path)
+        async with lock:
+            registros: list[DesperdicioRegistrado] = []
+            if path.exists():
+                texto = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                partes = texto.split("---")
+                cuerpo = partes[-1] if len(partes) >= 3 else texto
+                registros = self._parsear_tabla_desperdicio(cuerpo)
+            registros.append(registro)
+            contenido = self._formato_documento_desperdicio(mes, registros)
+            await self._write_text(path, contenido)
+
+    async def resumen_desperdicio(self, mes: str) -> ResumenDesperdicio:
+        """Resumen del desperdicio de un mes (vacío si no hay registros)."""
+        path = self._path_desperdicio(mes)
+        if not path.exists():
+            return ResumenDesperdicio(mes=mes)
+        texto = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        partes = texto.split("---")
+        cuerpo = partes[-1] if len(partes) >= 3 else texto
+        registros = self._parsear_tabla_desperdicio(cuerpo)
+        por_motivo: dict[str, int] = {}
+        for r in registros:
+            por_motivo[r.motivo] = por_motivo.get(r.motivo, 0) + 1
+        return ResumenDesperdicio(
+            mes=mes,
+            total_registros=len(registros),
+            valor_total=round(sum(r.valor_estimado for r in registros), 2),
+            por_motivo=por_motivo,
+            ultimos=list(reversed(registros[-10:])),
         )
 
     # --- Lista de la compra (listas/compra.md) ----------------------------------

@@ -16,6 +16,7 @@ es_reserva_estrategica: false
 mqtt_sensor_topic: null
 dias_promedio_consumo: null
 ultimo_consumo: null
+historial_consumo: []
 auto_lista_compra: false
 tags: []
 ultima_actualizacion: null

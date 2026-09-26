@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Scopes OAuth2: Google Tasks + Google Calendar
 SCOPES = [
     "https://www.googleapis.com/auth/tasks",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",
 ]
 
 # Deltas de reprogramación por frecuencia

@@ -5,6 +5,7 @@ import {
   CalendarDays,
   Check,
   Loader2,
+  PackageX,
   Pencil,
   Plus,
   ScanBarcode,
@@ -22,6 +23,7 @@ import type {
   Categoria,
   CategoriaItem,
   Consumible,
+  PrediccionAgotamiento,
   Supermercado,
   Ubicacion,
   Unidad,
@@ -29,6 +31,7 @@ import type {
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 import { Escaner } from "@/components/escaner";
 import { ModalEscaneo } from "@/components/modal-escaneo";
+import { ModalMerma } from "@/components/modal-merma";
 
 const UBICACIONES: { id: Ubicacion; nombre: string }[] = [
   { id: "nevera", nombre: "Nevera" },
@@ -48,6 +51,17 @@ const UNIDADES: Unidad[] = [
 ];
 
 const SIN_FILTRO = "__todas__";
+
+function textoDiasStock(dias: number): string {
+  if (dias < 1) return "<1 d";
+  return `${Math.round(dias)} d`;
+}
+
+function estiloPrediccion(dias: number): string {
+  if (dias <= 3) return "bg-rose-500/15 text-rose-300";
+  if (dias <= 7) return "bg-amber-500/15 text-amber-300";
+  return "bg-fuchsia-500/15 text-fuchsia-300";
+}
 
 function nombreCategoria(categorias: Categoria[], id?: string | null): string {
   if (!id) return "Sin categoría";
@@ -75,6 +89,10 @@ export default function InventarioPage() {
   const [itemEdicion, setItemEdicion] = useState<Consumible | null>(null);
   const [modalNuevoAbierto, setModalNuevoAbierto] = useState(false);
   const [confirmarBorrado, setConfirmarBorrado] = useState<Consumible | null>(null);
+  const [itemMerma, setItemMerma] = useState<Consumible | null>(null);
+  const [predicciones, setPredicciones] = useState<
+    Record<string, PrediccionAgotamiento>
+  >({});
 
   const cargar = useCallback(() => {
     setError(null);
@@ -90,6 +108,15 @@ export default function InventarioPage() {
             : "API no disponible",
         ),
       );
+    // Las predicciones son un extra: si fallan, la página sigue operativa
+    api
+      .getPredicciones()
+      .then((preds) =>
+        setPredicciones(
+          Object.fromEntries(preds.map((p) => [p.item_id, p])),
+        ),
+      )
+      .catch(() => setPredicciones({}));
   }, []);
 
   useEffect(cargar, [cargar]);
@@ -289,7 +316,9 @@ export default function InventarioPage() {
       )}
 
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {visibles.map((item) => (
+        {visibles.map((item) => {
+          const pred = predicciones[item.id];
+          return (
           <li key={item.id} className="tarjeta-bento">
             <div className="mb-2 flex items-start justify-between gap-2">
               <h3 className="min-w-0 font-semibold leading-tight text-slate-100">
@@ -319,6 +348,14 @@ export default function InventarioPage() {
               {item.fecha_caducidad_proxima && (
                 <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-300">
                   Caduca {item.fecha_caducidad_proxima}
+                </span>
+              )}
+              {pred && (
+                <span
+                  className={`rounded-full px-2 py-0.5 ${estiloPrediccion(pred.dias_restantes)}`}
+                  title={`Agotamiento estimado: ${pred.fecha_estimada_agotamiento} · confianza ${pred.confianza} · ritmo ${pred.tasa_diaria} ${item.unidad}/día`}
+                >
+                  ≈{textoDiasStock(pred.dias_restantes)} de stock
                 </span>
               )}
               {item.auto_lista_compra && (
@@ -351,6 +388,15 @@ export default function InventarioPage() {
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
                 type="button"
+                onClick={() => setItemMerma(item)}
+                className="rounded-lg p-2 text-amber-400/90 transition-colors hover:bg-amber-950/30"
+                aria-label="Registrar merma (producto tirado)"
+                title="Registrar merma (producto tirado)"
+              >
+                <PackageX className="size-4" />
+              </button>
+              <button
+                type="button"
                 onClick={() => setItemEdicion(item)}
                 className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
                 aria-label="Editar ítem"
@@ -367,7 +413,8 @@ export default function InventarioPage() {
               </button>
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       <button
@@ -398,6 +445,18 @@ export default function InventarioPage() {
           onCerrar={() => setItemCompra(null)}
           onExito={(mensaje) => {
             setAviso(mensaje);
+            cargar();
+          }}
+        />
+      )}
+
+      {itemMerma && (
+        <ModalMerma
+          item={itemMerma}
+          onCerrar={() => setItemMerma(null)}
+          onExito={(mensaje) => {
+            setAviso(mensaje);
+            setItemMerma(null);
             cargar();
           }}
         />

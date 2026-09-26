@@ -19,6 +19,7 @@ import {
 } from "date-fns";
 import { es } from "date-fns/locale";
 import {
+  AlarmClock,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -29,7 +30,12 @@ import {
   X,
 } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
-import type { CrearTareaInput, Tarea, VistaCalendarioTarea } from "@/lib/types";
+import type {
+  CrearTareaInput,
+  EstadisticasTareas,
+  Tarea,
+  VistaCalendarioTarea,
+} from "@/lib/types";
 import { hoyISO } from "@/lib/utils";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 import { FormularioTarea } from "@/components/formulario-tarea";
@@ -63,6 +69,7 @@ export default function TareasPage() {
   const [aviso, setAviso] = useState<string | null>(null);
   const [modalTarea, setModalTarea] = useState<Tarea | null | "nueva">(null);
   const [diaPanel, setDiaPanel] = useState<Date | null>(null);
+  const [stats, setStats] = useState<EstadisticasTareas | null>(null);
 
   const rango = useMemo(() => {
     const actual = fecha;
@@ -97,6 +104,11 @@ export default function TareasPage() {
     } finally {
       setCargando(false);
     }
+    // Estadísticas del panel superior (no bloquean el calendario)
+    api
+      .getEstadisticasTareas()
+      .then(setStats)
+      .catch(() => setStats(null));
   }, [rango]);
 
   useEffect(() => {
@@ -210,6 +222,20 @@ export default function TareasPage() {
     }
   };
 
+  const posponer = async (t: VistaCalendarioTarea, dias: number) => {
+    try {
+      await api.posponerTarea(t.task_id, dias);
+      setAviso(
+        `Pospuesta ${dias} ${dias === 1 ? "día" : "días"}: ${t.titulo}`,
+      );
+      cargar();
+    } catch (err) {
+      setAviso(
+        err instanceof ErrorApi ? err.message : "No se pudo posponer la tarea",
+      );
+    }
+  };
+
   const tituloFecha = useMemo(() => {
     switch (vista) {
       case "dia":
@@ -234,6 +260,8 @@ export default function TareasPage() {
           {aviso}
         </p>
       )}
+
+      <PanelStats stats={stats} />
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
@@ -296,6 +324,7 @@ export default function TareasPage() {
               onVerificarStock={verificarStock}
               onEditar={abrirEditar}
               onBorrar={borrarTarea}
+              onPosponer={posponer}
             />
           )}
           {vista === "semana" && (
@@ -349,9 +378,84 @@ export default function TareasPage() {
           onVerificarStock={verificarStock}
           onEditar={abrirEditar}
           onBorrar={borrarTarea}
+          onPosponer={posponer}
         />
       )}
     </div>
+  );
+}
+
+function PanelStats({ stats }: { stats: EstadisticasTareas | null }) {
+  if (!stats) return null;
+  const puntualidad =
+    stats.completadas_30d > 0 && stats.a_tiempo_30d !== null
+      ? Math.round((100 * stats.a_tiempo_30d) / stats.completadas_30d)
+      : null;
+
+  const chips: { clave: string; texto: string; clase: string }[] = [
+    {
+      clave: "hechas",
+      texto: `${stats.completadas_mes} hechas este mes`,
+      clase: "border-emerald-500/25 bg-emerald-500/10 text-emerald-200",
+    },
+    {
+      clave: "pendientes",
+      texto: `${stats.pendientes} pendientes`,
+      clase: "border-sky-500/25 bg-sky-500/10 text-sky-200",
+    },
+    {
+      clave: "vencidas",
+      texto: `${stats.vencidas} vencidas`,
+      clase:
+        stats.vencidas > 0
+          ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+          : "border-slate-700/40 bg-slate-900/40 text-slate-400",
+    },
+    {
+      clave: "proximas",
+      texto: `${stats.proximas_7_dias} en los próximos 7 días`,
+      clase: "border-slate-700/40 bg-slate-900/40 text-slate-300",
+    },
+  ];
+  if (puntualidad !== null) {
+    chips.push({
+      clave: "puntualidad",
+      texto: `${puntualidad} % a tiempo (30 d)`,
+      clase: "border-violet-500/25 bg-violet-500/10 text-violet-200",
+    });
+  }
+
+  return (
+    <section
+      aria-label="Estadísticas de tareas"
+      className="rounded-2xl border border-slate-700/30 bg-slate-900/40 p-4 backdrop-blur"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {chips.map(({ clave, texto, clase }) => (
+          <span
+            key={clave}
+            className={`rounded-full border px-3 py-1 text-xs font-medium ${clase}`}
+          >
+            {texto}
+          </span>
+        ))}
+      </div>
+      {stats.por_conviviente.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+          <span className="font-medium uppercase tracking-wide text-slate-500">
+            Equidad
+          </span>
+          {stats.por_conviviente.map((c) => (
+            <span key={c.nombre}>
+              {c.nombre}:{" "}
+              <span className="text-slate-200">
+                {c.completadas} ({c.porcentaje} %)
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -361,6 +465,7 @@ function TarjetaTarea({
   onVerificarStock,
   onEditar,
   onBorrar,
+  onPosponer,
   compacto = false,
 }: {
   tarea: VistaCalendarioTarea;
@@ -368,8 +473,10 @@ function TarjetaTarea({
   onVerificarStock: (t: VistaCalendarioTarea) => void;
   onEditar: (t: VistaCalendarioTarea) => void;
   onBorrar: (id: string) => void;
+  onPosponer: (t: VistaCalendarioTarea, dias: number) => void;
   compacto?: boolean;
 }) {
+  const [menuPosponer, setMenuPosponer] = useState(false);
   return (
     <div
       className={`group relative rounded-xl border border-slate-700/30 bg-slate-900/60 p-3 transition-all hover:border-slate-600/50 hover:bg-slate-800/60 ${
@@ -416,6 +523,36 @@ function TarjetaTarea({
             <Check className="size-3.5" /> Completar
           </button>
         )}
+        {tarea.estado !== "completada" && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuPosponer((v) => !v)}
+              className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-100"
+              aria-label="Posponer"
+              aria-expanded={menuPosponer}
+            >
+              <AlarmClock className="size-4" />
+            </button>
+            {menuPosponer && (
+              <div className="absolute right-0 top-8 z-20 flex gap-1 rounded-xl border border-slate-700/50 bg-slate-900 p-1 shadow-xl">
+                {[1, 3, 7].map((dias) => (
+                  <button
+                    key={dias}
+                    type="button"
+                    onClick={() => {
+                      setMenuPosponer(false);
+                      onPosponer(tarea, dias);
+                    }}
+                    className="rounded-lg px-2 py-1 text-xs font-medium text-slate-300 transition-colors hover:bg-emerald-600/20 hover:text-emerald-300"
+                  >
+                    +{dias} d
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <button
           type="button"
           onClick={() => onEditar(tarea)}
@@ -444,6 +581,7 @@ function VistaDia({
   onVerificarStock,
   onEditar,
   onBorrar,
+  onPosponer,
 }: {
   fecha: Date;
   tareas: VistaCalendarioTarea[];
@@ -451,6 +589,7 @@ function VistaDia({
   onVerificarStock: (t: VistaCalendarioTarea) => void;
   onEditar: (t: VistaCalendarioTarea) => void;
   onBorrar: (id: string) => void;
+  onPosponer: (t: VistaCalendarioTarea, dias: number) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -470,6 +609,7 @@ function VistaDia({
           onVerificarStock={onVerificarStock}
           onEditar={onEditar}
           onBorrar={onBorrar}
+          onPosponer={onPosponer}
         />
       ))}
     </div>
@@ -635,6 +775,7 @@ function PanelDia({
   onVerificarStock,
   onEditar,
   onBorrar,
+  onPosponer,
 }: {
   fecha: Date;
   tareas: VistaCalendarioTarea[];
@@ -643,6 +784,7 @@ function PanelDia({
   onVerificarStock: (t: VistaCalendarioTarea) => void;
   onEditar: (t: VistaCalendarioTarea) => void;
   onBorrar: (id: string) => void;
+  onPosponer: (t: VistaCalendarioTarea, dias: number) => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/60 backdrop-blur-sm">
@@ -673,6 +815,7 @@ function PanelDia({
               onVerificarStock={onVerificarStock}
               onEditar={onEditar}
               onBorrar={onBorrar}
+              onPosponer={onPosponer}
             />
           ))}
         </div>

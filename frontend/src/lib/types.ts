@@ -417,3 +417,120 @@ export interface RespuestaEditarLista {
   item_id: string;
   editadas: number;
 }
+
+// --- Inteligencia del hogar (Fase 7) -------------------------------------------
+
+/** Motivos válidos de una merma (Literal del backend). */
+export type MotivoMerma = "caducado" | "estropeado" | "no_deseado" | "otro";
+
+export type UrgenciaReposicion = "critica" | "alta" | "media";
+
+export type ConfianzaPrediccion = "alta" | "media" | "baja";
+
+/** Predicción de agotamiento de un ítem (GET /api/insights/predictions). */
+export interface PrediccionAgotamiento {
+  item_id: string;
+  nombre: string;
+  unidad: Unidad;
+  disponible: number;
+  tasa_diaria: number;
+  dias_restantes: number;
+  fecha_estimada_agotamiento: string;
+  confianza: ConfianzaPrediccion;
+}
+
+/** Sugerencia de reposición priorizada (GET /api/insights/restock). */
+export interface SugerenciaReposicion {
+  item_id: string;
+  nombre: string;
+  categoria: CategoriaItem;
+  ubicacion: Ubicacion;
+  unidad: Unidad;
+  disponible: number;
+  stock_minimo: number;
+  dias_restantes: number | null;
+  urgencia: UrgenciaReposicion;
+  motivo: string;
+  ya_en_lista: boolean;
+  precio_estimado: number | null;
+}
+
+/** Registro de desperdicio (merma) de un mes. */
+export interface DesperdicioRegistrado {
+  fecha: string;
+  item_id: string;
+  nombre: string;
+  cantidad: number;
+  unidad: Unidad;
+  motivo: string;
+  valor_estimado: number;
+}
+
+/** Resumen mensual de desperdicio (GET /api/insights/waste). */
+export interface ResumenDesperdicio {
+  mes: string;
+  total_registros: number;
+  valor_total: number;
+  por_motivo: Record<string, number>;
+  ultimos: DesperdicioRegistrado[];
+}
+
+/** Cuota de tareas completadas por conviviente (equidad). */
+export interface CuotaConviviente {
+  nombre: string;
+  completadas: number;
+  porcentaje: number;
+}
+
+/** Tarea pendiente con fecha pasada. */
+export interface TareaVencida {
+  task_id: string;
+  titulo: string;
+  fecha_programada: string | null;
+  dias_retraso: number;
+  asignado_a: string | null;
+  prioridad: Prioridad;
+}
+
+/** Estadísticas de tareas (GET /api/insights/tasks). */
+export interface EstadisticasTareas {
+  mes: string;
+  completadas_mes: number;
+  por_conviviente: CuotaConviviente[];
+  pendientes: number;
+  vencidas: number;
+  proximas_7_dias: number;
+  completadas_30d: number;
+  a_tiempo_30d: number | null;
+  top_vencidas: TareaVencida[];
+}
+
+/** Panel de inteligencia completo (GET /api/insights). */
+export interface ResumenInteligencia {
+  fecha: string;
+  valor_inventario: number;
+  total_items: number;
+  items_bajo_minimo: number;
+  caducidades_7_dias: number;
+  reposicion: SugerenciaReposicion[];
+  predicciones: PrediccionAgotamiento[];
+  desperdicio_mes: ResumenDesperdicio;
+  tareas: EstadisticasTareas;
+}
+
+/** Respuesta de POST /api/inventory/{item_id}/waste. */
+export interface ResultadoDesperdicio {
+  item_id: string;
+  nombre: string;
+  cantidad: number;
+  stock_actual: number;
+  valor_estimado: number;
+  resumen_mes: ResumenDesperdicio;
+}
+
+/** Respuesta del asistente del hogar (POST /api/ai/chat). */
+export interface RespuestaChat {
+  respuesta: string;
+  items_en_contexto: number;
+  tareas_en_contexto: number;
+}

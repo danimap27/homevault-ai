@@ -20,6 +20,7 @@ import {
 import { es } from "date-fns/locale";
 import {
   AlarmClock,
+  AlertTriangle,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -70,6 +71,7 @@ export default function TareasPage() {
   const [modalTarea, setModalTarea] = useState<Tarea | null | "nueva">(null);
   const [diaPanel, setDiaPanel] = useState<Date | null>(null);
   const [stats, setStats] = useState<EstadisticasTareas | null>(null);
+  const [atrasadas, setAtrasadas] = useState<Tarea[]>([]);
 
   const rango = useMemo(() => {
     const actual = fecha;
@@ -109,6 +111,21 @@ export default function TareasPage() {
       .getEstadisticasTareas()
       .then(setStats)
       .catch(() => setStats(null));
+    // Tareas atrasadas: pendientes con fecha pasada (pueden quedar fuera del rango visible)
+    api
+      .getTareasPendientes()
+      .then((pendientes) => {
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+        setAtrasadas(
+          pendientes.filter(
+            (t) =>
+              t.fecha_programada &&
+              new Date(`${t.fecha_programada}T00:00:00`) < hoy,
+          ),
+        );
+      })
+      .catch(() => setAtrasadas([]));
   }, [rango]);
 
   useEffect(() => {
@@ -191,6 +208,32 @@ export default function TareasPage() {
     }
   };
 
+  const completarAtrasada = async (tarea: Tarea) => {
+    try {
+      await api.completarTarea(tarea.id);
+      setAviso(`Tarea completada: ${tarea.titulo}`);
+      cargar();
+    } catch (err) {
+      setAviso(
+        err instanceof ErrorApi ? err.message : "No se pudo completar la tarea",
+      );
+    }
+  };
+
+  const posponerAtrasada = async (tarea: Tarea, dias: number) => {
+    try {
+      await api.posponerTarea(tarea.id, dias);
+      setAviso(
+        `Pospuesta ${dias} ${dias === 1 ? "día" : "días"}: ${tarea.titulo}`,
+      );
+      cargar();
+    } catch (err) {
+      setAviso(
+        err instanceof ErrorApi ? err.message : "No se pudo posponer la tarea",
+      );
+    }
+  };
+
   const verificarStock = async (tarea: VistaCalendarioTarea) => {
     try {
       const actualizada = await api.verificarStockTarea(tarea.task_id);
@@ -209,7 +252,7 @@ export default function TareasPage() {
     }
   };
 
-  const abrirEditar = async (t: VistaCalendarioTarea) => {
+  const abrirEditar = async (t: { task_id: string }) => {
     try {
       const full = await api.getTarea(t.task_id);
       setModalTarea(full);
@@ -262,6 +305,79 @@ export default function TareasPage() {
       )}
 
       <PanelStats stats={stats} />
+
+      {atrasadas.length > 0 && (
+        <section
+          aria-label="Tareas atrasadas"
+          className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-3"
+        >
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-rose-200">
+            <AlertTriangle className="size-4" />
+            {atrasadas.length === 1
+              ? "1 tarea atrasada"
+              : `${atrasadas.length} tareas atrasadas`}
+            <span className="text-xs font-normal text-rose-300/70">
+              reprograma o completa para sacarlas del limbo
+            </span>
+          </h2>
+          <ul className="space-y-2">
+            {atrasadas.map((t) => (
+              <li
+                key={t.id}
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-500/20 bg-slate-900/50 px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-slate-100">
+                    {t.titulo}
+                  </p>
+                  <p className="text-xs text-rose-300/90">
+                    {t.fecha_programada
+                      ? `${diasDeRetraso(t.fecha_programada)} d de retraso`
+                      : "sin fecha"}
+                    {t.asignado_a ? ` · ${t.asignado_a}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => completarAtrasada(t)}
+                    className="rounded-lg bg-emerald-600/20 p-1.5 text-emerald-300 transition-colors hover:bg-emerald-600/30"
+                    aria-label="Completar tarea"
+                    title="Completar"
+                  >
+                    <Check className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => posponerAtrasada(t, 1)}
+                    className="rounded-lg bg-slate-700/40 px-2 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-600/50"
+                    title="Posponer un día"
+                  >
+                    +1 d
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => posponerAtrasada(t, 7)}
+                    className="rounded-lg bg-slate-700/40 px-2 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-600/50"
+                    title="Posponer una semana"
+                  >
+                    +7 d
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => abrirEditar({ task_id: t.id })}
+                    className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-100"
+                    aria-label="Editar tarea"
+                    title="Editar"
+                  >
+                    <Pencil className="size-4" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
@@ -457,6 +573,13 @@ function PanelStats({ stats }: { stats: EstadisticasTareas | null }) {
       )}
     </section>
   );
+}
+
+function diasDeRetraso(fecha: string): number {
+  const dias = Math.floor(
+    (Date.now() - new Date(`${fecha}T00:00:00`).getTime()) / 86_400_000,
+  );
+  return Math.max(1, dias);
 }
 
 function TarjetaTarea({

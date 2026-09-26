@@ -87,15 +87,17 @@ export function WidgetCaducidades() {
                       {item.nombre}
                       <span className="opacity-70">
                         {" "}(
-                        {item.dias_restantes <= 0
-                          ? "hoy/ayer"
-                          : `${item.dias_restantes} d`}
+                        {item.dias_restantes < 0
+                          ? "caducado"
+                          : item.dias_restantes === 0
+                            ? "hoy"
+                            : `${item.dias_restantes} d`}
                         )
                       </span>
                     </li>
                   ))}
                   {grupo.length === 0 && (
-                    <li className="opacity-60">Sin ítems</li>
+                    <li className="opacity-60">Nada por aquí</li>
                   )}
                   {grupo.length > 4 && (
                     <li className="opacity-70">+{grupo.length - 4} más</li>

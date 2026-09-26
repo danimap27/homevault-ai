@@ -34,15 +34,15 @@ export function WidgetResumenHogar({
       clave: "minimo",
       icono: AlertTriangle,
       color:
-        datos.items_bajo_minimo > 0
+        datos.reposicion.length > 0
           ? "bg-rose-500/15 text-rose-400"
           : "bg-slate-500/15 text-slate-400",
-      etiqueta: "Bajo mínimo",
-      valor: String(datos.items_bajo_minimo),
+      etiqueta: "Por reponer",
+      valor: String(datos.reposicion.length),
       detalle:
-        datos.items_bajo_minimo > 0
-          ? "revisa la lista de reposición"
-          : "todo por encima del mínimo",
+        datos.reposicion.length > 0
+          ? "sin stock o al límite del mínimo"
+          : "nada urgente ahora mismo",
     },
     {
       clave: "caducidad",

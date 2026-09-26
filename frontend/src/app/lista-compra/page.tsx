@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
+import { formatearCantidad } from "@/lib/formato";
 import type { Categoria, EntradaListaCompra, Supermercado } from "@/lib/types";
 import { Cargando, ErrorWidget } from "@/components/estado-async";
 
@@ -154,7 +155,7 @@ export default function ListaCompraPage() {
           (e) =>
             `${e.comprado ? "[x]" : "[ ]"} ${e.nombre}` +
             (e.cantidad
-              ? ` (${e.cantidad}${e.unidad ? ` ${e.unidad}` : ""})`
+              ? ` (${formatearCantidad(e.cantidad, e.unidad)})`
               : ""),
         );
         return `${categoria.toUpperCase()}\n${lineas.join("\n")}`;
@@ -305,7 +306,7 @@ export default function ListaCompraPage() {
                       </span>
                       {entrada.cantidad !== null && (
                         <span className="shrink-0 text-sm text-slate-500">
-                          {entrada.cantidad} {entrada.unidad ?? ""}
+                          {formatearCantidad(entrada.cantidad, entrada.unidad)}
                         </span>
                       )}
                       <button

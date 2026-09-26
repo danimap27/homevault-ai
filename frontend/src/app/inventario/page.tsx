@@ -32,6 +32,7 @@ import { Cargando, ErrorWidget } from "@/components/estado-async";
 import { Escaner } from "@/components/escaner";
 import { ModalEscaneo } from "@/components/modal-escaneo";
 import { ModalMerma } from "@/components/modal-merma";
+import { formatearCantidad } from "@/lib/formato";
 
 const UBICACIONES: { id: Ubicacion; nombre: string }[] = [
   { id: "nevera", nombre: "Nevera" },
@@ -68,6 +69,34 @@ function nombreCategoria(categorias: Categoria[], id?: string | null): string {
   return categorias.find((c) => c.id === id)?.nombre ?? id;
 }
 
+const DIAS_CADUCA_PRONTO = 7;
+
+/** Ítems que requieren decisión: sin stock o al límite del mínimo. */
+function necesitaAtencion(item: Consumible): boolean {
+  return (
+    item.stock_actual <= 0 ||
+    (item.stock_minimo > 0 && item.stock_actual <= item.stock_minimo)
+  );
+}
+
+/** Caduca en los próximos `DIAS_CADUCA_PRONTO` días. */
+function caducaPronto(item: Consumible): boolean {
+  if (!item.fecha_caducidad_proxima) return false;
+  const dias =
+    (new Date(`${item.fecha_caducidad_proxima}T00:00:00`).getTime() -
+      Date.now()) /
+    86_400_000;
+  return dias <= DIAS_CADUCA_PRONTO;
+}
+
+/** Peso del orden «atención primero»: 0 sin stock → 3 sin urgencia. */
+function pesoAtencion(item: Consumible): number {
+  if (item.stock_actual <= 0) return 0;
+  if (item.stock_minimo > 0 && item.stock_actual <= item.stock_minimo) return 1;
+  if (caducaPronto(item)) return 2;
+  return 3;
+}
+
 export default function InventarioPage() {
   const [items, setItems] = useState<Consumible[] | null>(null);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
@@ -77,6 +106,12 @@ export default function InventarioPage() {
   );
   const [categoriaActiva, setCategoriaActiva] = useState<CategoriaItem | typeof SIN_FILTRO>(
     SIN_FILTRO,
+  );
+  const [estadoActivo, setEstadoActivo] = useState<
+    "atencion" | "caduca" | typeof SIN_FILTRO
+  >(SIN_FILTRO);
+  const [orden, setOrden] = useState<"atencion" | "nombre" | "caducidad">(
+    "atencion",
   );
   const [escanerAbierto, setEscanerAbierto] = useState(false);
   const [modalEscaneoAbierto, setModalEscaneoAbierto] = useState(false);
@@ -122,14 +157,41 @@ export default function InventarioPage() {
   useEffect(cargar, [cargar]);
 
   const visibles = useMemo(() => {
-    return (items ?? []).filter((item) => {
+    const filtrados = (items ?? []).filter((item) => {
       const okUbicacion =
         ubicacionActiva === SIN_FILTRO || item.ubicacion === ubicacionActiva;
       const okCategoria =
         categoriaActiva === SIN_FILTRO || item.categoria === categoriaActiva;
-      return okUbicacion && okCategoria;
+      const okEstado =
+        estadoActivo === SIN_FILTRO ||
+        (estadoActivo === "atencion"
+          ? necesitaAtencion(item)
+          : caducaPronto(item));
+      return okUbicacion && okCategoria && okEstado;
     });
-  }, [items, ubicacionActiva, categoriaActiva]);
+    const porNombre = (a: Consumible, b: Consumible) =>
+      a.nombre.localeCompare(b.nombre, "es");
+    if (orden === "nombre") return [...filtrados].sort(porNombre);
+    if (orden === "caducidad") {
+      return [...filtrados].sort((a, b) => {
+        const fa = a.fecha_caducidad_proxima ?? "9999-99-99";
+        const fb = b.fecha_caducidad_proxima ?? "9999-99-99";
+        return fa === fb ? porNombre(a, b) : fa.localeCompare(fb);
+      });
+    }
+    return [...filtrados].sort(
+      (a, b) => pesoAtencion(a) - pesoAtencion(b) || porNombre(a, b),
+    );
+  }, [items, ubicacionActiva, categoriaActiva, estadoActivo, orden]);
+
+  const nAtencion = useMemo(
+    () => (items ?? []).filter(necesitaAtencion).length,
+    [items],
+  );
+  const nCaducaPronto = useMemo(
+    () => (items ?? []).filter(caducaPronto).length,
+    [items],
+  );
 
   const contarPorUbicacion = useCallback(
     (ubicacion: Ubicacion) =>
@@ -296,6 +358,62 @@ export default function InventarioPage() {
             </button>
           ))}
         </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              setEstadoActivo((actual) =>
+                actual === "atencion" ? SIN_FILTRO : "atencion",
+              )
+            }
+            aria-pressed={estadoActivo === "atencion"}
+            className={`boton-tactil ${
+              estadoActivo === "atencion"
+                ? "bg-rose-500/20 text-rose-200 ring-1 ring-rose-400/50"
+                : "border border-rose-500/30 bg-slate-900/60 text-rose-300/90"
+            }`}
+          >
+            ⚠️ Atención
+            <span className="ml-1 text-xs opacity-70">
+              {items ? nAtencion : "…"}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setEstadoActivo((actual) =>
+                actual === "caduca" ? SIN_FILTRO : "caduca",
+              )
+            }
+            aria-pressed={estadoActivo === "caduca"}
+            className={`boton-tactil ${
+              estadoActivo === "caduca"
+                ? "bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50"
+                : "border border-amber-500/30 bg-slate-900/60 text-amber-300/90"
+            }`}
+          >
+            ⏰ Caduca pronto
+            <span className="ml-1 text-xs opacity-70">
+              {items ? nCaducaPronto : "…"}
+            </span>
+          </button>
+          <label className="ml-auto flex items-center gap-1.5 text-xs text-slate-400">
+            Orden
+            <select
+              value={orden}
+              onChange={(ev) =>
+                setOrden(ev.target.value as "atencion" | "nombre" | "caducidad")
+              }
+              className="rounded-lg border border-slate-700/50 bg-slate-900/80 px-2 py-1.5 text-xs text-slate-200"
+              aria-label="Ordenar inventario"
+            >
+              <option value="atencion">Atención primero</option>
+              <option value="caducidad">Caducidad</option>
+              <option value="nombre">Nombre (A-Z)</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       {aviso && (
@@ -325,7 +443,7 @@ export default function InventarioPage() {
                 {item.nombre}
               </h3>
               <span className="shrink-0 text-sm font-medium text-slate-300">
-                {item.stock_actual} {item.unidad}
+                {formatearCantidad(item.stock_actual, item.unidad)}
               </span>
             </div>
 
@@ -340,11 +458,15 @@ export default function InventarioPage() {
                   Reserva estratégica
                 </span>
               )}
-              {item.stock_actual <= item.stock_minimo && (
+              {item.stock_actual <= 0 ? (
+                <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-rose-300">
+                  Sin stock
+                </span>
+              ) : item.stock_actual <= item.stock_minimo ? (
                 <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-rose-300">
                   Bajo mínimo
                 </span>
-              )}
+              ) : null}
               {item.fecha_caducidad_proxima && (
                 <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-300">
                   Caduca {item.fecha_caducidad_proxima}
@@ -372,9 +494,10 @@ export default function InventarioPage() {
               <button
                 type="button"
                 onClick={() => consumir(item)}
-                className="boton-secundario flex-1"
+                disabled={item.stock_actual <= 0}
+                className="boton-secundario flex-1 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Consumir 1
+                {item.stock_actual <= 0 ? "Sin stock" : "Consumir 1"}
               </button>
               <button
                 type="button"

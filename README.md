@@ -16,7 +16,7 @@ Plataforma open-source de gestión inteligente del hogar. Su **única fuente de 
 |--------|----------|
 | **Inventario** | Consumibles/alimentos/recambios con lotes FIFO, stock mínimo, caducidades, sensores de peso MQTT y escáner de códigos de barras. |
 | **Inteligencia** | Predicción de agotamiento por ritmo real de consumo, reposición priorizada, valor del inventario y registro de merma/desperdicio. |
-| **Asistente** | Chat con LLM local (Ollama) alimentado con el contexto del hogar: inventario, caducidades, compra, tareas y menú. |
+| **Asistente** | Chat con LLM local (Ollama) alimentado con el contexto del hogar: inventario, caducidades, compra, tareas y menú. Respuesta en streaming (SSE) token a token. |
 | **Recetario + planificador** | Recetas con ingredientes, plan semanal interactivo, modo **Rescue Chef** (usa lo que caduca), **batch cooking** y calculadora de eventos/invitados. |
 | **Tareas domésticas** | Reparto rotativo de convivientes, frecuencias personalizables, bloqueo por falta de recambio, posponer en un toque, estadísticas de equidad y sincronización bidireccional con Google Tasks. |
 | **Lista de la compra** | Auto-generada al tocar stock mínimo, categorizada por pasillo, exportable e imprimible en térmica ESC/POS. |
@@ -163,7 +163,7 @@ Herramientas expuestas:
 cd frontend && npm run build && cd ..
 ```
 
-Estado actual: **310 tests en verde**.
+Estado actual: **318 tests en verde**.
 
 ---
 

@@ -21,7 +21,7 @@ import re
 import unicodedata
 import uuid
 from datetime import date
-from typing import Optional, Protocol, get_args
+from typing import AsyncIterator, Optional, Protocol, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -252,6 +252,7 @@ class OllamaAdapter:
         model: str = "llama3.2-vision",
         think: Optional[bool] = None,
         timeout: float = 180.0,
+        keep_alive: Optional[str] = "30m",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -259,6 +260,9 @@ class OllamaAdapter:
         # False = desactivar el modo razonamiento (clave en CPU con modelos híbridos).
         self.think = think
         self.timeout = timeout
+        # Tiempo que Ollama mantiene el modelo en RAM tras la última llamada;
+        # evita recargarlo (y repetir el prefill en frío) entre preguntas.
+        self.keep_alive = keep_alive
 
     async def completar(
         self,
@@ -275,6 +279,8 @@ class OllamaAdapter:
         }
         if self.think is not None:
             cuerpo["think"] = self.think
+        if self.keep_alive:
+            cuerpo["keep_alive"] = self.keep_alive
         if imagen is not None:
             cuerpo["images"] = [base64.b64encode(imagen).decode("ascii")]
         async with httpx.AsyncClient(
@@ -283,6 +289,40 @@ class OllamaAdapter:
             respuesta = await cliente.post("/api/generate", json=cuerpo)
             respuesta.raise_for_status()
             return respuesta.json().get("response", "")
+
+    async def completar_stream(self, prompt: str) -> AsyncIterator[str]:
+        """Como ``completar`` pero emitiendo el texto por trozos.
+
+        Consume el stream NDJSON de Ollama (``/api/generate`` con
+        ``stream: true``) y va emitiendo el campo ``response`` de cada línea.
+        """
+        import httpx
+
+        cuerpo: dict = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": True,
+        }
+        if self.think is not None:
+            cuerpo["think"] = self.think
+        if self.keep_alive:
+            cuerpo["keep_alive"] = self.keep_alive
+        async with httpx.AsyncClient(
+            base_url=self.base_url, timeout=self.timeout
+        ) as cliente:
+            async with cliente.stream(
+                "POST", "/api/generate", json=cuerpo
+            ) as respuesta:
+                respuesta.raise_for_status()
+                async for linea in respuesta.aiter_lines():
+                    if not linea.strip():
+                        continue
+                    datos = json.loads(linea)
+                    trozo = datos.get("response", "")
+                    if trozo:
+                        yield trozo
+                    if datos.get("done"):
+                        break
 
 
 def build_llm_client(settings: Settings) -> ClienteLLM:

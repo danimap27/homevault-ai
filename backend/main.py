@@ -13,16 +13,18 @@ frontend Next.js, con CORS configurable.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from typing import Literal, Optional
+from typing import AsyncIterator, Literal, Optional
 
 from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.ai_chat import HomeChat
@@ -1130,6 +1132,127 @@ async def chat_del_hogar(
             status_code=503,
             detail=f"El asistente no está disponible: {exc}",
         ) from exc
+
+
+@app.post("/api/ai/chat/stream")
+async def chat_del_hogar_stream(
+    request: Request, peticion: PeticionChat
+) -> StreamingResponse:
+    """Como /api/ai/chat pero con respuesta en streaming (Server-Sent Events)."""
+    chat: Optional[HomeChat] = getattr(request.app.state, "home_chat", None)
+    if chat is None:
+        raise HTTPException(
+            status_code=503, detail="El asistente no está configurado"
+        )
+
+    async def eventos() -> AsyncIterator[str]:
+        try:
+            async for evento in chat.responder_stream(peticion.mensaje):
+                yield f"data: {json.dumps(evento, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001 - se informa al cliente por SSE
+            logger.exception("Error en el stream del asistente")
+            yield (
+                "data: "
+                + json.dumps(
+                    {"tipo": "error", "detalle": str(exc)}, ensure_ascii=False
+                )
+                + "\n\n"
+            )
+
+    return StreamingResponse(
+        eventos(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --- Jobs del asistente (streaming por polling) -------------------------------
+#
+# Cloudflare bufferiza las respuestas SSE que atraviesan el túnel del homelab,
+# así que la web usa un flujo de job + polling: el POST inicia la generación en
+# segundo plano y el frontend consulta el texto acumulado cada segundo. Este
+# mecanismo es robusto ante proxies que bufferizan y ante cortes a los 100 s.
+
+
+class JobChat:
+    """Generación del asistente en curso, consultable por polling."""
+
+    def __init__(self) -> None:
+        self.estado: str = "generando"  # generando | fin | error
+        self.texto: str = ""
+        self.meta: dict = {}
+        self.detalle: Optional[str] = None
+        self.creado = datetime.now()
+
+    async def generar(self, chat: HomeChat, mensaje: str) -> None:
+        try:
+            async for evento in chat.responder_stream(mensaje):
+                tipo = evento.get("tipo")
+                if tipo == "meta":
+                    self.meta = evento
+                elif tipo == "token":
+                    self.texto += evento.get("texto", "")
+            self.estado = "fin"
+        except Exception as exc:  # noqa: BLE001 - se comunica vía el estado
+            logger.exception("Error generando la respuesta del asistente")
+            self.estado = "error"
+            self.detalle = str(exc)
+
+
+_jobs_chat: dict[str, JobChat] = {}
+
+
+def _purgar_jobs_chat() -> None:
+    """Elimina los jobs de más de una hora para que el diccionario no crezca."""
+    ahora = datetime.now()
+    caducados = [
+        jid
+        for jid, job in _jobs_chat.items()
+        if (ahora - job.creado).total_seconds() > 3600
+    ]
+    for jid in caducados:
+        _jobs_chat.pop(jid, None)
+
+
+class RespuestaJobChat(BaseModel):
+    """Estado de una generación del asistente."""
+
+    job_id: str
+    estado: str  # generando | fin | error
+    texto: str = ""
+    meta: dict = Field(default_factory=dict)
+    detalle: Optional[str] = None
+
+
+@app.post("/api/ai/chat/job", response_model=RespuestaJobChat)
+async def crear_job_chat(request: Request, peticion: PeticionChat) -> RespuestaJobChat:
+    """Inicia una generación del asistente y devuelve su identificador."""
+    chat: Optional[HomeChat] = getattr(request.app.state, "home_chat", None)
+    if chat is None:
+        raise HTTPException(
+            status_code=503, detail="El asistente no está configurado"
+        )
+    _purgar_jobs_chat()
+    job_id = uuid.uuid4().hex
+    job = JobChat()
+    _jobs_chat[job_id] = job
+    asyncio.create_task(job.generar(chat, peticion.mensaje))
+    return RespuestaJobChat(job_id=job_id, estado=job.estado)
+
+
+@app.get("/api/ai/chat/job/{job_id}", response_model=RespuestaJobChat)
+async def estado_job_chat(job_id: str) -> RespuestaJobChat:
+    """Estado y texto acumulado de una generación del asistente."""
+    job = _jobs_chat.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    return RespuestaJobChat(
+        job_id=job_id,
+        estado=job.estado,
+        texto=job.texto,
+        meta=job.meta,
+        detalle=job.detalle,
+    )
 
 
 # --- Perfiles de usuario (estilo Netflix) -------------------------------------

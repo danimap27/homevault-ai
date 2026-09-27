@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -199,3 +200,135 @@ def test_endpoint_insights_con_datos(
     predicciones = cliente.get("/api/insights/predictions")
     assert predicciones.status_code == 200
     assert predicciones.json() == []
+
+
+# --- Streaming del asistente (SSE) -------------------------------------------
+
+
+class FakeLLMStream:
+    """Fake del ClienteLLM con soporte de streaming por trozos."""
+
+    def __init__(self, trozos: list[str]) -> None:
+        self.trozos = trozos
+
+    async def completar(
+        self,
+        prompt: str,
+        imagen: bytes | None = None,
+        mime_type: str | None = None,
+    ) -> str:
+        return "".join(self.trozos)
+
+    async def completar_stream(self, prompt: str):
+        for trozo in self.trozos:
+            yield trozo
+
+
+async def test_responder_stream_emite_eventos(
+    vault_poblado: VaultManager,
+) -> None:
+    chat = HomeChat(vault_poblado, FakeLLMStream(["Hola ", "mundo"]))
+    eventos = [evento async for evento in chat.responder_stream("¿qué hay?")]
+    assert eventos[0]["tipo"] == "meta"
+    assert eventos[0]["items"] >= 1
+    assert eventos[-1]["tipo"] == "fin"
+    tokens = [e["texto"] for e in eventos if e["tipo"] == "token"]
+    assert "".join(tokens) == "Hola mundo"
+
+
+async def test_responder_stream_fallback_sin_stream(
+    vault_poblado: VaultManager,
+) -> None:
+    """Un cliente sin ``completar_stream`` emite la respuesta como un token."""
+    chat = HomeChat(vault_poblado, FakeLLM(["Respuesta completa."]))
+    eventos = [evento async for evento in chat.responder_stream("hola")]
+    tokens = [e["texto"] for e in eventos if e["tipo"] == "token"]
+    assert tokens == ["Respuesta completa."]
+    assert eventos[-1]["tipo"] == "fin"
+
+
+def test_endpoint_chat_stream(
+    cliente: TestClient, vault_poblado: VaultManager
+) -> None:
+    cliente.app.state.home_chat = HomeChat(  # type: ignore[attr-defined]
+        vault_poblado, FakeLLMStream(["Tienes ", "6 yogures."])
+    )
+    respuesta = cliente.post("/api/ai/chat/stream", json={"mensaje": "¿yogures?"})
+    assert respuesta.status_code == 200
+    assert respuesta.headers["content-type"].startswith("text/event-stream")
+    assert '"tipo": "meta"' in respuesta.text
+    assert "Tienes " in respuesta.text
+    assert "6 yogures." in respuesta.text
+    assert '"tipo": "fin"' in respuesta.text
+
+
+def test_endpoint_chat_stream_503_sin_asistente(cliente: TestClient) -> None:
+    cliente.app.state.home_chat = None  # type: ignore[attr-defined]
+    respuesta = cliente.post("/api/ai/chat/stream", json={"mensaje": "hola"})
+    assert respuesta.status_code == 503
+
+
+# --- Jobs del asistente (streaming por polling) -------------------------------
+
+
+def test_job_chat_flujo_completo(
+    cliente: TestClient, vault_poblado: VaultManager
+) -> None:
+    cliente.app.state.home_chat = HomeChat(  # type: ignore[attr-defined]
+        vault_poblado, FakeLLMStream(["Hola ", "mundo"])
+    )
+    inicio = cliente.post("/api/ai/chat/job", json={"mensaje": "hola"})
+    assert inicio.status_code == 200
+    assert inicio.json()["estado"] == "generando"
+
+    job_id = inicio.json()["job_id"]
+    estado = inicio.json()
+    for _ in range(60):
+        if estado["estado"] != "generando":
+            break
+        time.sleep(0.05)
+        estado = cliente.get(f"/api/ai/chat/job/{job_id}").json()
+
+    assert estado["estado"] == "fin"
+    assert estado["texto"] == "Hola mundo"
+    assert estado["meta"]["items"] >= 1
+
+
+def test_job_chat_error_del_modelo(
+    cliente: TestClient, vault_poblado: VaultManager
+) -> None:
+    class FakeLLMRoto:
+        async def completar(
+            self,
+            prompt: str,
+            imagen: bytes | None = None,
+            mime_type: str | None = None,
+        ) -> str:
+            raise RuntimeError("modelo caído")
+
+    cliente.app.state.home_chat = HomeChat(  # type: ignore[attr-defined]
+        vault_poblado, FakeLLMRoto()
+    )
+    job_id = cliente.post(
+        "/api/ai/chat/job", json={"mensaje": "hola"}
+    ).json()["job_id"]
+
+    estado = {}
+    for _ in range(60):
+        estado = cliente.get(f"/api/ai/chat/job/{job_id}").json()
+        if estado["estado"] != "generando":
+            break
+        time.sleep(0.05)
+
+    assert estado["estado"] == "error"
+    assert "modelo caído" in (estado["detalle"] or "")
+
+
+def test_job_chat_404_si_no_existe(cliente: TestClient) -> None:
+    assert cliente.get("/api/ai/chat/job/no-existe").status_code == 404
+
+
+def test_job_chat_503_sin_asistente(cliente: TestClient) -> None:
+    cliente.app.state.home_chat = None  # type: ignore[attr-defined]
+    respuesta = cliente.post("/api/ai/chat/job", json={"mensaje": "hola"})
+    assert respuesta.status_code == 503

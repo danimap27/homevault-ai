@@ -297,3 +297,33 @@ Pregunta al asistente del hogar: un LLM local (Ollama) recibe el contexto real d
 ```
 
 Respuesta: `{ "respuesta": "...", "items_en_contexto": 24, "tareas_en_contexto": 5 }`. Requiere `OLLAMA_BASE_URL` accesible desde el contenedor (en el homelab, el puente `tools/ollama_bridge.py`).
+
+### `POST /api/ai/chat/stream`
+Como el anterior pero con la respuesta en streaming (Server-Sent Events). Eventos `data:`:
+
+```json
+{"tipo": "meta", "items": 24, "tareas": 5}
+{"tipo": "token", "texto": "Tienes "}
+{"tipo": "token", "texto": "6 yogures…"}
+{"tipo": "fin"}
+```
+
+El frontend (`/asistente`) usa este endpoint para mostrar la respuesta token a token mientras el modelo local la genera.
+
+> Nota: a través del túnel de Cloudflare las respuestas SSE llegan bufferizadas (todos los eventos al final). Por eso la web usa el flujo de job + polling de abajo, que es inmune al buffering de proxies. El endpoint SSE se mantiene para acceso directo en LAN y pruebas.
+
+### `POST /api/ai/chat/job`
+Inicia una generación del asistente en segundo plano y devuelve su identificador. Respuesta:
+
+```json
+{ "job_id": "3f2a…", "estado": "generando", "texto": "", "meta": {}, "detalle": null }
+```
+
+### `GET /api/ai/chat/job/{job_id}`
+Estado y texto acumulado de la generación (la web consulta cada segundo). Respuesta:
+
+```json
+{ "job_id": "3f2a…", "estado": "fin", "texto": "Tienes 4 litros de leche…", "meta": {"tipo": "meta", "items": 17, "tareas": 2} }
+```
+
+`estado` es `generando`, `fin` o `error` (con `detalle`). Los jobs se purgan automáticamente pasada una hora.

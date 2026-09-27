@@ -488,6 +488,72 @@ export const api = {
   chatear: (mensaje: string) =>
     post<RespuestaChat>("/api/ai/chat", { mensaje }),
 
+  /**
+   * Asistente con respuesta incremental: crea un job de generación y consulta
+   * su estado cada segundo hasta terminar. Se evita SSE porque Cloudflare
+   * bufferiza los streams a través del túnel del homelab.
+   * Invoca `onMeta` al conocer el contexto y `onToken` por cada delta de texto.
+   */
+  chatearStream: async (
+    mensaje: string,
+    callbacks: {
+      onMeta?: (meta: { items: number; tareas: number }) => void;
+      onToken: (texto: string) => void;
+    },
+  ): Promise<void> => {
+    interface EstadoJobChat {
+      job_id: string;
+      estado: "generando" | "fin" | "error";
+      texto: string;
+      meta: { items?: number; tareas?: number };
+      detalle: string | null;
+    }
+    const crear = await fetch(`${API_URL}/api/ai/chat/job`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mensaje }),
+    });
+    if (!crear.ok) {
+      let detalle = crear.statusText;
+      try {
+        const cuerpo = (await crear.json()) as { detail?: unknown };
+        detalle = String(cuerpo.detail ?? detalle);
+      } catch {
+        // respuesta sin cuerpo JSON
+      }
+      throw new ErrorApi(crear.status, detalle);
+    }
+    const { job_id } = (await crear.json()) as EstadoJobChat;
+
+    let visto = 0;
+    let metaEnviada = false;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const estado = await apiFetch<EstadoJobChat>(
+        `/api/ai/chat/job/${encodeURIComponent(job_id)}`,
+      );
+      if (
+        !metaEnviada &&
+        estado.meta &&
+        typeof estado.meta.items === "number"
+      ) {
+        callbacks.onMeta?.({
+          items: estado.meta.items,
+          tareas: estado.meta.tareas ?? 0,
+        });
+        metaEnviada = true;
+      }
+      if (estado.texto.length > visto) {
+        callbacks.onToken(estado.texto.slice(visto));
+        visto = estado.texto.length;
+      }
+      if (estado.estado === "fin") break;
+      if (estado.estado === "error") {
+        throw new ErrorApi(500, estado.detalle ?? "Error del asistente");
+      }
+    }
+  },
+
   /** POST /api/shopping-list: añade una entrada manual a la compra. */
   anadirAListaCompra: (
     nombre: string,

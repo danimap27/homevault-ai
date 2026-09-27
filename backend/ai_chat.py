@@ -9,6 +9,7 @@ de solo lectura: no modifica el vault.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import AsyncIterator
 
 from backend.ai_vision_parser import ClienteLLM
 from backend.models import PlanSemanal, RespuestaChat
@@ -129,18 +130,44 @@ class HomeChat:
         except Exception:
             return None
 
-    async def responder(self, mensaje: str) -> RespuestaChat:
-        """Responde a una pregunta usando el contexto actual del hogar."""
-        contexto, n_items, n_tareas = await self.construir_contexto()
-        prompt = (
+    @staticmethod
+    def _construir_prompt(contexto: str, mensaje: str) -> str:
+        return (
             f"{PROMPT_SISTEMA}\n\n"
             f"# Contexto del hogar\n{contexto}\n\n"
             f"# Pregunta\n{mensaje}\n\n"
             f"# Respuesta (en español, breve):"
         )
-        respuesta = await self._llm.completar(prompt)
+
+    async def responder(self, mensaje: str) -> RespuestaChat:
+        """Responde a una pregunta usando el contexto actual del hogar."""
+        contexto, n_items, n_tareas = await self.construir_contexto()
+        respuesta = await self._llm.completar(
+            self._construir_prompt(contexto, mensaje)
+        )
         return RespuestaChat(
             respuesta=respuesta.strip(),
             items_en_contexto=n_items,
             tareas_en_contexto=n_tareas,
         )
+
+    async def responder_stream(self, mensaje: str) -> AsyncIterator[dict]:
+        """Como ``responder`` pero emitiendo eventos SSE: meta, tokens y fin.
+
+        Eventos: ``{"tipo": "meta", "items": N, "tareas": M}`` primero,
+        ``{"tipo": "token", "texto": "..."}`` por cada trozo y
+        ``{"tipo": "fin"}`` al terminar. Si el cliente LLM no soporta
+        streaming, se emite la respuesta completa como un único token.
+        """
+        contexto, n_items, n_tareas = await self.construir_contexto()
+        yield {"tipo": "meta", "items": n_items, "tareas": n_tareas}
+        prompt = self._construir_prompt(contexto, mensaje)
+        completar_stream = getattr(self._llm, "completar_stream", None)
+        if completar_stream is None:
+            texto = await self._llm.completar(prompt)
+            yield {"tipo": "token", "texto": texto.strip()}
+        else:
+            async for trozo in completar_stream(prompt):
+                if trozo:
+                    yield {"tipo": "token", "texto": trozo}
+        yield {"tipo": "fin"}

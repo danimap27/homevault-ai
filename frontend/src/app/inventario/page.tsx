@@ -9,6 +9,7 @@ import {
   Pencil,
   Plus,
   ScanBarcode,
+  Search,
   ShoppingCart,
   Store,
   Trash2,
@@ -71,6 +72,14 @@ function nombreCategoria(categorias: Categoria[], id?: string | null): string {
 
 const DIAS_CADUCA_PRONTO = 7;
 
+/** Texto sin tildes y en minúsculas para búsquedas tolerantes. */
+function normalizar(texto: string): string {
+  return texto
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
 /** Ítems que requieren decisión: sin stock o al límite del mínimo. */
 function necesitaAtencion(item: Consumible): boolean {
   return (
@@ -113,6 +122,7 @@ export default function InventarioPage() {
   const [orden, setOrden] = useState<"atencion" | "nombre" | "caducidad">(
     "atencion",
   );
+  const [busqueda, setBusqueda] = useState("");
   const [escanerAbierto, setEscanerAbierto] = useState(false);
   const [modalEscaneoAbierto, setModalEscaneoAbierto] = useState(false);
   const [resultadoEscaneo, setResultadoEscaneo] = useState<
@@ -157,6 +167,7 @@ export default function InventarioPage() {
   useEffect(cargar, [cargar]);
 
   const visibles = useMemo(() => {
+    const consulta = normalizar(busqueda.trim());
     const filtrados = (items ?? []).filter((item) => {
       const okUbicacion =
         ubicacionActiva === SIN_FILTRO || item.ubicacion === ubicacionActiva;
@@ -167,7 +178,9 @@ export default function InventarioPage() {
         (estadoActivo === "atencion"
           ? necesitaAtencion(item)
           : caducaPronto(item));
-      return okUbicacion && okCategoria && okEstado;
+      const okBusqueda =
+        consulta === "" || normalizar(item.nombre).includes(consulta);
+      return okUbicacion && okCategoria && okEstado && okBusqueda;
     });
     const porNombre = (a: Consumible, b: Consumible) =>
       a.nombre.localeCompare(b.nombre, "es");
@@ -182,7 +195,7 @@ export default function InventarioPage() {
     return [...filtrados].sort(
       (a, b) => pesoAtencion(a) - pesoAtencion(b) || porNombre(a, b),
     );
-  }, [items, ubicacionActiva, categoriaActiva, estadoActivo, orden]);
+  }, [items, ubicacionActiva, categoriaActiva, estadoActivo, orden, busqueda]);
 
   const nAtencion = useMemo(
     () => (items ?? []).filter(necesitaAtencion).length,
@@ -288,6 +301,26 @@ export default function InventarioPage() {
       </div>
 
       <div className="mb-4 space-y-3">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-500" />
+          <input
+            value={busqueda}
+            onChange={(ev) => setBusqueda(ev.target.value)}
+            placeholder="Buscar producto…"
+            className="input-premium w-full pl-9"
+            aria-label="Buscar en el inventario"
+          />
+          {busqueda && (
+            <button
+              type="button"
+              onClick={() => setBusqueda("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-slate-400 transition-colors hover:text-slate-100"
+              aria-label="Limpiar búsqueda"
+            >
+              <X className="size-4" />
+            </button>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"

@@ -35,26 +35,45 @@ export default function AsistentePage() {
   const enviar = async (pregunta: string) => {
     const limpio = pregunta.trim();
     if (!limpio || enviando) return;
-    setMensajes((prev) => [...prev, { rol: "user", texto: limpio }]);
+    setMensajes((prev) => [
+      ...prev,
+      { rol: "user", texto: limpio },
+      { rol: "bot", texto: "" },
+    ]);
     setTexto("");
     setEnviando(true);
     setError(null);
+
+    const actualizarUltimo = (cambio: (m: Mensaje) => Mensaje) =>
+      setMensajes((prev) => {
+        const copia = [...prev];
+        copia[copia.length - 1] = cambio(copia[copia.length - 1]);
+        return copia;
+      });
+
     try {
-      const respuesta = await api.chatear(limpio);
-      setMensajes((prev) => [
-        ...prev,
-        {
-          rol: "bot",
-          texto: respuesta.respuesta,
-          meta: `${respuesta.items_en_contexto} ítems · ${respuesta.tareas_en_contexto} tareas en contexto`,
-        },
-      ]);
+      await api.chatearStream(limpio, {
+        onMeta: ({ items, tareas }) =>
+          actualizarUltimo((m) => ({
+            ...m,
+            meta: `${items} ítems · ${tareas} tareas en contexto`,
+          })),
+        onToken: (trozo) =>
+          actualizarUltimo((m) => ({ ...m, texto: m.texto + trozo })),
+      });
     } catch (err) {
       setError(
         err instanceof ErrorApi
           ? err.message
           : "El asistente no está disponible ahora mismo",
       );
+      // Retira la burbuja vacía si el fallo ocurrió antes del primer token
+      setMensajes((prev) => {
+        const ultimo = prev[prev.length - 1];
+        return ultimo?.rol === "bot" && ultimo.texto === ""
+          ? prev.slice(0, -1)
+          : prev;
+      });
     } finally {
       setEnviando(false);
     }
@@ -121,7 +140,21 @@ export default function AsistentePage() {
                   : "bg-slate-800/70 text-slate-200"
               }`}
             >
-              <p className="whitespace-pre-wrap">{m.texto}</p>
+              {m.texto ? (
+                <p className="whitespace-pre-wrap">
+                  {m.texto}
+                  {enviando && indice === mensajes.length - 1 && (
+                    <span className="ml-0.5 inline-block animate-pulse text-violet-300">
+                      ▍
+                    </span>
+                  )}
+                </p>
+              ) : (
+                <p className="text-slate-400">
+                  <Loader2 className="inline size-4 animate-spin" /> Pensando…
+                  el modelo corre en local, puede tardar un poco
+                </p>
+              )}
               {m.meta && (
                 <p className="mt-1.5 text-[10px] uppercase tracking-wide text-slate-500">
                   {m.meta}
@@ -135,18 +168,6 @@ export default function AsistentePage() {
             )}
           </div>
         ))}
-
-        {enviando && (
-          <div className="flex items-start gap-2">
-            <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-violet-500/15 text-violet-400">
-              <Bot className="size-4" />
-            </div>
-            <div className="rounded-2xl bg-slate-800/70 px-3.5 py-2.5 text-sm text-slate-400">
-              <Loader2 className="inline size-4 animate-spin" /> Pensando… el
-              modelo corre en local, puede tardar unos segundos
-            </div>
-          </div>
-        )}
 
         {error && (
           <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-2 text-center text-sm text-rose-200">

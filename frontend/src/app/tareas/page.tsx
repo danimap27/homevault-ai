@@ -311,7 +311,7 @@ export default function TareasPage() {
           aria-label="Tareas atrasadas"
           className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-3"
         >
-          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-rose-200">
+          <h2 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-rose-200">
             <AlertTriangle className="size-4" />
             {atrasadas.length === 1
               ? "1 tarea atrasada"
@@ -327,7 +327,7 @@ export default function TareasPage() {
                 className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-500/20 bg-slate-900/50 px-3 py-2"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-100">
+                  <p className="line-clamp-2 text-sm font-medium text-slate-100">
                     {t.titulo}
                   </p>
                   <p className="text-xs text-rose-300/90">
@@ -470,10 +470,10 @@ export default function TareasPage() {
       <button
         type="button"
         onClick={() => setModalTarea("nueva")}
-        className="fixed bottom-24 right-5 z-30 flex size-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 transition-all duration-200 hover:scale-110 hover:bg-emerald-500 active:scale-95"
+        className="fixed bottom-24 right-4 z-30 flex size-12 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 transition-all duration-200 hover:scale-110 hover:bg-emerald-500 active:scale-95 sm:right-5 sm:size-14"
         aria-label="Nueva tarea"
       >
-        <Plus className="size-7" />
+        <Plus className="size-6 sm:size-7" />
       </button>
 
       {modalTarea && (

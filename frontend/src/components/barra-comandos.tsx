@@ -30,8 +30,14 @@ export function BarraComandos() {
       }
       if (ev.key === "Escape") setAbierta(false);
     };
+    // La UI (botón «Añadir») también puede abrir la barra en móvil.
+    const alAbrirDesdeUI = () => setAbierta(true);
     window.addEventListener("keydown", alTeclear);
-    return () => window.removeEventListener("keydown", alTeclear);
+    window.addEventListener("hv:comandos", alAbrirDesdeUI);
+    return () => {
+      window.removeEventListener("keydown", alTeclear);
+      window.removeEventListener("hv:comandos", alAbrirDesdeUI);
+    };
   }, []);
 
   useEffect(() => {

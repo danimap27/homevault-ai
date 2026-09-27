@@ -64,6 +64,34 @@
   @apply rounded-xl;
 }
 
+/* Fila de filtros que en móvil se desliza en horizontal (sin barra visible)
+   y en pantallas anchas se reparte en varias líneas. */
+.chips-scroll {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.25rem;
+  scrollbar-width: none;
+}
+
+.chips-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.chips-scroll > * {
+  flex-shrink: 0;
+}
+
+@media (min-width: 640px) {
+  .chips-scroll {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    padding-bottom: 0;
+  }
+}
+
 @media print {
   /* En impresión solo se muestra la lista de la compra (clase .solo-print). */
   body * {

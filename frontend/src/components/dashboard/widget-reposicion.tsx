@@ -78,7 +78,7 @@ export function WidgetReposicion({
           return (
             <li
               key={s.item_id}
-              className={`flex items-center justify-between gap-2 rounded-xl border p-3 ${ESTILO_URGENCIA[s.urgencia]}`}
+              className={`flex min-w-0 items-center justify-between gap-2 rounded-xl border p-3 ${ESTILO_URGENCIA[s.urgencia]}`}
             >
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{s.nombre}</p>

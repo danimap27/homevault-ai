@@ -234,7 +234,7 @@ export default function AsistentePage() {
         <input
           value={texto}
           onChange={(ev) => setTexto(ev.target.value)}
-          placeholder="Ej: ¿tengo leche? ¿qué ceno mañana?"
+          placeholder="Ej.: ¿tengo leche?"
           className="input-premium flex-1"
           aria-label="Pregunta al asistente"
           maxLength={2000}

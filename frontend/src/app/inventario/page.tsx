@@ -321,7 +321,7 @@ export default function InventarioPage() {
             </button>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="chips-scroll">
           <button
             type="button"
             onClick={() => setUbicacionActiva(SIN_FILTRO)}
@@ -355,7 +355,7 @@ export default function InventarioPage() {
           ))}
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="chips-scroll">
           <button
             type="button"
             onClick={() => setCategoriaActiva(SIN_FILTRO)}
@@ -392,7 +392,7 @@ export default function InventarioPage() {
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="chips-scroll items-center">
           <button
             type="button"
             onClick={() =>
@@ -577,9 +577,9 @@ export default function InventarioPage() {
         type="button"
         onClick={() => setEscanerAbierto(true)}
         aria-label="Abrir escáner de código de barras"
-        className="fixed bottom-24 right-5 z-30 flex size-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 transition-all duration-200 hover:scale-110 hover:bg-emerald-500 active:scale-95"
+        className="fixed bottom-24 right-4 z-30 flex size-12 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 transition-all duration-200 hover:scale-110 hover:bg-emerald-500 active:scale-95 sm:right-5 sm:size-14"
       >
-        <ScanBarcode className="size-7" />
+        <ScanBarcode className="size-6 sm:size-7" />
       </button>
 
       {escanerAbierto && (

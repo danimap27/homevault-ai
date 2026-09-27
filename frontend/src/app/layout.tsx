@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { BarraNavegacion } from "@/components/barra-navegacion";
 import { BarraComandos } from "@/components/barra-comandos";
+import { BotonComandos } from "@/components/boton-comandos";
 import { PerfilProvider } from "@/components/perfil-context";
 import { PerfilGate } from "@/components/perfil-gate";
 
@@ -43,6 +44,7 @@ export default function RootLayout({
                 <h1 className="text-xl font-bold tracking-tight">
                   HomeVault <span className="text-emerald-500">AI</span>
                 </h1>
+                <BotonComandos />
               </header>
               <main className="flex-1">{children}</main>
             </div>

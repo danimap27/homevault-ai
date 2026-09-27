@@ -119,8 +119,8 @@ export function WidgetTareasStats({
           </p>
           <ul className="space-y-1 text-sm">
             {stats.top_vencidas.slice(0, 3).map((v) => (
-              <li key={v.task_id} className="flex items-center justify-between gap-2 text-slate-300">
-                <span className="truncate">{v.titulo}</span>
+              <li key={v.task_id} className="flex min-w-0 items-center justify-between gap-2 text-slate-300">
+                <span className="min-w-0 truncate">{v.titulo}</span>
                 <span className="shrink-0 text-xs text-rose-300">
                   {v.dias_retraso} d de retraso
                 </span>

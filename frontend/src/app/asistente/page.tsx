@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bot, Loader2, Send, Sparkles, User } from "lucide-react";
+import { Bot, Loader2, Send, Sparkles, Trash2, User } from "lucide-react";
 import { api, ErrorApi } from "@/lib/api";
 
 interface Mensaje {
@@ -17,12 +17,27 @@ const SUGERENCIAS = [
   "¿Cómo va el reparto de tareas de casa?",
 ];
 
+const CLAVE_HISTORIAL = "homevault-asistente-historial";
+
+/** Recupera la conversación guardada en el navegador (si la hay). */
+function historialGuardado(): Mensaje[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const crudo = window.localStorage.getItem(CLAVE_HISTORIAL);
+    if (!crudo) return [];
+    const datos = JSON.parse(crudo) as Mensaje[];
+    return Array.isArray(datos) ? datos : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Asistente del hogar: chat con el LLM local (Ollama) alimentado con el
  * contexto real del vault (inventario, compra, tareas y plan semanal).
  */
 export default function AsistentePage() {
-  const [mensajes, setMensajes] = useState<Mensaje[]>([]);
+  const [mensajes, setMensajes] = useState<Mensaje[]>(historialGuardado);
   const [texto, setTexto] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +46,27 @@ export default function AsistentePage() {
   useEffect(() => {
     finRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [mensajes, enviando]);
+
+  useEffect(() => {
+    try {
+      const utiles = mensajes.filter((m) => m.texto.trim() !== "");
+      if (utiles.length === 0) {
+        window.localStorage.removeItem(CLAVE_HISTORIAL);
+      } else {
+        window.localStorage.setItem(
+          CLAVE_HISTORIAL,
+          JSON.stringify(utiles.slice(-40)),
+        );
+      }
+    } catch {
+      // sin persistencia (modo privado, cuota, etc.)
+    }
+  }, [mensajes]);
+
+  const limpiar = () => {
+    setMensajes([]);
+    setError(null);
+  };
 
   const enviar = async (pregunta: string) => {
     const limpio = pregunta.trim();
@@ -94,6 +130,17 @@ export default function AsistentePage() {
             aquí.
           </p>
         </div>
+        {mensajes.length > 0 && (
+          <button
+            type="button"
+            onClick={limpiar}
+            title="Limpiar conversación"
+            aria-label="Limpiar conversación"
+            className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-700/40 px-2.5 py-1.5 text-xs text-slate-400 transition-colors hover:border-red-500/40 hover:text-red-300"
+          >
+            <Trash2 className="size-3.5" /> Limpiar
+          </button>
+        )}
       </header>
 
       <div className="flex-1 space-y-3 overflow-y-auto rounded-2xl border border-slate-700/30 bg-slate-900/40 p-4 backdrop-blur">
